@@ -6,11 +6,6 @@ from pydantic import BaseModel, ValidationError
 from aigraph.interfaces.ollama import LLMInterface
 
 
-class ToolCall(BaseModel):
-    name: str
-    input: Dict[str, Any] = {}
-
-
 class Agent:
     def __init__(self, name: str):
         self.name = name

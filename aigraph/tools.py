@@ -2,8 +2,12 @@ import logging
 import inspect
 
 from typing import Any, Dict, Optional, Callable
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+
+class ToolCall(BaseModel):
+    name: str
+    input: Dict[str, Any] = Field(default_factory=dict)
 
 class ToolResult(BaseModel):
     name: str
@@ -11,7 +15,7 @@ class ToolResult(BaseModel):
     output: Any
     success: bool
     error: Optional[str] = None
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class Tool:
@@ -33,7 +37,9 @@ class FunctionTool(Tool):
     def call(self, input: Dict[str, Any]) -> ToolResult:
         payload = input or {}
         try:
-            out = self.func(**payload)  
+            bound = self._signature.bind_partial(**payload)
+            bound.apply_defaults()
+            out = self.fn(*bound.args, **bound.kwargs)
             return ToolResult(name=self.name, input=payload, output=out, success=True)
         except TypeError as e:
             return ToolResult(name=self.name, input=payload, output=None, success=False, error=f"Bad arguments: {e}")
