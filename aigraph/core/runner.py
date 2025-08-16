@@ -74,17 +74,85 @@ class GraphRunner:
 
         while True:
             if step >= self.max_steps:
-                self.logger.warning("Max steps %d reached, stopping.", self.max_steps)
                 break
 
             agent: Agent = self.graph.nodes[current_node]["agent"]
+            node_def = self.graph.nodes[current_node].get("node_def")
             tools_used: List[ToolResult] = []
+
+            if node_def:
+                specs = []
+                for t in (node_def.tools or []):
+                    if isinstance(t, dict):
+                        specs.append(t)
+                    elif isinstance(t, str):
+                        specs.append({"name": t, "mode": "interactive"})
+                ctx.variables.setdefault("tools", {})
+                for spec in specs:
+                    if spec.get("mode", "interactive") == "interactive":
+                        continue
+                    name = spec["name"]
+                    alias = spec.get("as") or spec.get("alias") or name
+
+                    def _get_path(root, path: str):
+                        cur = root
+                        for part in path.split("."):
+                            if part == "":
+                                continue
+                            cur = (cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None))
+                            if cur is None:
+                                break
+                        return cur
+
+                    def _resolve(argmap, last_output, vars):
+                        payload = getattr(last_output, "payload", last_output)
+                        out = {}
+                        for k, v in (argmap or {}).items():
+                            if isinstance(v, str) and v.startswith("$"):
+                                if v == "$input":
+                                    out[k] = payload
+                                elif v.startswith("$input."):
+                                    out[k] = _get_path(payload, v[len("$input."):])
+                                elif v == "$context":
+                                    out[k] = vars
+                                elif v.startswith("$context."):
+                                    out[k] = _get_path(vars, v[len("$context."):])
+                                else:
+                                    out[k] = v
+                            else:
+                                out[k] = v
+                        return out
+
+                    inputs = _resolve(spec.get("argmap", {}), last_output, ctx.variables)
+                    if isinstance(agent, LLMAgent) and agent.allowed_tools and name not in agent.allowed_tools:
+                        raise PermissionError(
+                            f"[{agent.name}] Pre-tool '{name}' not allowed. Allowed: {sorted(agent.allowed_tools)}"
+                        )
+                    tr = self.tool_registry.get(name).call(inputs)
+                    ctx.variables["tools"][alias] = tr.model_dump()
+                    if spec.get("required") and not tr.success:
+                        raise RuntimeError(f"Required pre-tool '{name}' failed: {tr.error}")
+
             output = agent.process(last_output, ctx.variables)
 
             if isinstance(agent, LLMAgent) and agent.max_tool_rounds > 0:
                 rounds = 0
+                per_tool_caps: Dict[str, int] = {}
+                if node_def:
+                    for t in (node_def.tools or []):
+                        if isinstance(t, dict) and t.get("mode", "interactive") == "interactive" and "max_calls" in t:
+                            per_tool_caps[t["name"]] = int(t["max_calls"])
+                per_tool_counts: Dict[str, int] = {}
+
                 while rounds < agent.max_tool_rounds and getattr(output, "tool_call", None):
                     try:
+                        called = getattr(output.tool_call, "name", None)
+                        if called in per_tool_caps:
+                            c = per_tool_counts.get(called, 0)
+                            if c >= per_tool_caps[called]:
+                                break
+                            per_tool_counts[called] = c + 1
+
                         tr = self._maybe_execute_tool(agent, output.tool_call)
                         tools_used.append(tr)
                         ctx.variables["__tool_last__"] = {
@@ -103,8 +171,11 @@ class GraphRunner:
                             break
 
                     except Exception as e:
-                        self.logger.error("Tool execution failed for agent '%s': %s", agent.name, e)
-                        ctx.variables["__tool_last__"] = {"name": getattr(output.tool_call, "name", "?"), "success": False, "error": str(e)}
+                        ctx.variables["__tool_last__"] = {
+                            "name": getattr(output.tool_call, "name", "?"),
+                            "success": False,
+                            "error": str(e),
+                        }
                         output = agent.process(last_output, ctx.variables)
                         rounds += 1
 
@@ -131,7 +202,7 @@ class GraphRunner:
                 raise AssertionError(f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}")
 
             current_node = next_node
-
+            
             is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
             if not is_router:
                 last_output = output
