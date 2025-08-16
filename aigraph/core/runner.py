@@ -52,16 +52,6 @@ class GraphRunner:
             if not isinstance(agent, Agent):
                 raise AssertionError(f"Node '{n}' does not contain a valid Agent (found: {type(agent)})")
 
-    def _maybe_execute_tool(self, agent: LLMAgent, tool_call_obj: Any) -> ToolResult:
-        tool_name = getattr(tool_call_obj, "name", None)
-        tool_input = getattr(tool_call_obj, "input", {}) or {}
-        if tool_name not in agent.allowed_tools:
-            raise PermissionError(
-                f"[{agent.name}] Tool '{tool_name}' not allowed. Allowed: {sorted(agent.allowed_tools)}"
-            )
-        tool = self.tool_registry.get(tool_name)
-        return tool.call(tool_input)
-
     def run(self, input_model: BaseModel, start_node: Any) -> Tuple[BaseModel, ExecutionContext]:
         if start_node not in self.graph:
             raise AssertionError(f"Start node '{start_node}' not in graph")
