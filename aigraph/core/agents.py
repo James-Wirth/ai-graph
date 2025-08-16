@@ -62,6 +62,9 @@ class LLMAgent(Agent):
         self.adapter = interface
 
         self.edges = edges or {}
+        if self.edges:
+            self.edges = {str(k.value if isinstance(k, enum.Enum) else k): v for k, v in self.edges.items()}
+
         self.route_field = route_field
         self.route_selector = route_selector
 
@@ -130,7 +133,7 @@ class LLMAgent(Agent):
         prompt = self.build_prompt(input_model, context)
 
         msgs: List[Dict[str, str]] = [
-            {"role": "system", "content": "You are a *precise* JSON generator. Return ONLY valid JSON for the schema."},
+            {"role": "system", "content": "You are a *precise* JSON generator. Return ONLY valid JSON for the schema. No code fences, no extra text."},
         ]
         hint = self._schema_hint_text(self.schema_hint)
         if hint:
@@ -168,11 +171,17 @@ class LLMAgent(Agent):
 
     def _llm_round(self, messages: List[Dict[str, str]]) -> BaseModel:
         raw = self.adapter.generate(messages=messages, response_model=self.response_model_cls)
-        self.logger.debug("Raw LLM response: %s", raw)
+        self.logger.debug("Raw LLM response (first 2k): %s ... (%d chars)",
+                  raw[:2000], len(raw))
         try:
             return self.response_model_cls.model_validate_json(raw)
         except ValidationError:
-            self.logger.error("Validation failed. Raw output: %s", raw)
+            try:
+                m = re.search(r"\{.*\}\s*$", raw, re.S)
+                if m: return self.response_model_cls.model_validate_json(m.group(0))
+            except Exception:
+                pass
+            self.logger.error("Validation failed. Raw output (first 2k): %s", raw[:2000])
             raise
 
     def process(self, input_model: BaseModel, context: Dict[str, Any]) -> BaseModel:
@@ -200,18 +209,16 @@ class LLMAgent(Agent):
             elif self.route_field and hasattr(last_output, self.route_field):
                 key = getattr(last_output, self.route_field)
 
-        if key is not None:
-            if isinstance(key, enum.Enum):
-                key = key.value
-            if not isinstance(key, str):
-                key = str(key)
+        if isinstance(key, enum.Enum): 
+            key = key.value
+        key = None if key is None else str(key)
 
         if self.edges:
             if key not in self.edges:
                 return None, f"Unknown route key '{key}' for edges {sorted(self.edges)}", 0.1
             target = self.edges[key]
             if target not in neighbors:
-                raise AssertionError(
+                raise ValueError(
                     f"[{self.name}] Edge for key '{key}' >> '{target}' not one of the actual neighbors {neighbors}"
                 )
             return target, f"Agent chose route '{key}'", 0.9
