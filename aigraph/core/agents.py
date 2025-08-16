@@ -81,14 +81,36 @@ class LLMAgent(Agent):
         if self.prompt_builder:
             return self.prompt_builder(input_model, context)
 
+        data = (
+            input_model.model_dump()
+            if hasattr(input_model, "model_dump")
+            else getattr(input_model, "__dict__", input_model)
+        )
         tmpl = Template(self.prompt_template)
         return tmpl.safe_substitute(
-            input=json.dumps(input_model.model_dump(), ensure_ascii=False, indent=2),
+            input=json.dumps(data, ensure_ascii=False, indent=2),
             context=json.dumps(context, ensure_ascii=False, indent=2),
         )
 
-    def _llm_round(self, prompt: str) -> BaseModel:
-        raw = self.adapter.generate(prompt=prompt, response_model=self.response_model)
+    def build_messages(self, input_model: BaseModel, context: Dict[str, Any]) -> List[Dict[str, str]]:
+        prompt = self.build_prompt(input_model, context)
+
+        msgs: List[Dict[str, str]] = [
+            {"role": "system", "content": "You are a *precise* JSON generator. Return ONLY valid JSON for the schema."},
+            {"role": "user", "content": prompt},
+        ]
+
+        last_tool = context.get("__tool_last__")
+        if last_tool:
+            msgs.append({
+                "role": "tool",
+                "content": json.dumps(last_tool, ensure_ascii=False),
+            })
+
+        return msgs
+
+    def _llm_round(self, messages: List[Dict[str, str]]) -> BaseModel:
+        raw = self.adapter.generate(messages=messages, response_model=self.response_model)
         self.logger.debug("Raw LLM response: %s", raw)
         try:
             return self.response_model.model_validate_json(raw)
@@ -98,8 +120,8 @@ class LLMAgent(Agent):
 
     def process(self, input_model: BaseModel, context: Dict[str, Any]) -> BaseModel:
         self.logger.info("Agent '%s' processing input: %s", self.name, input_model)
-        prompt = self.build_prompt(input_model, context)
-        return self._llm_round(prompt)
+        messages = self.build_messages(input_model, context)
+        return self._llm_round(messages)
 
 
     def route(
