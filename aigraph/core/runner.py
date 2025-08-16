@@ -117,7 +117,11 @@ class GraphRunner:
                 raise AssertionError(f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}")
 
             current_node = next_node
-            last_output = output
+
+            is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
+            if not is_router:
+                last_output = output
+
             step += 1
 
         return last_output, ctx
