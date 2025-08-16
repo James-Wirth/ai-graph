@@ -79,6 +79,7 @@ class GraphRunner:
             agent: Agent = self.graph.nodes[current_node]["agent"]
             node_def = self.graph.nodes[current_node].get("node_def")
             tools_used: List[ToolResult] = []
+            prompt_text: Optional[str] = None
 
             if node_def:
                 specs = []
@@ -133,7 +134,12 @@ class GraphRunner:
                     if spec.get("required") and not tr.success:
                         raise RuntimeError(f"Required pre-tool '{name}' failed: {tr.error}")
 
-            output = agent.process(last_output, ctx.variables)
+            if isinstance(agent, LLMAgent):
+                prompt_text = agent.build_prompt(last_output, ctx.variables)
+                messages = agent.build_messages(last_output, ctx.variables)
+                output = agent._llm_round(messages)
+            else:
+                output = agent.process(last_output, ctx.variables)
 
             if isinstance(agent, LLMAgent) and agent.max_tool_rounds > 0:
                 rounds = 0
@@ -165,6 +171,9 @@ class GraphRunner:
                         }
 
                         output = agent.process(last_output, ctx.variables)
+                        prompt_text = agent.build_prompt(last_output, ctx.variables)
+                        messages = agent.build_messages(last_output, ctx.variables)
+                        output = agent._llm_round(messages)
                         rounds += 1
 
                         if not getattr(output, "tool_call", None):
@@ -177,6 +186,9 @@ class GraphRunner:
                             "error": str(e),
                         }
                         output = agent.process(last_output, ctx.variables)
+                        prompt_text = agent.build_prompt(last_output, ctx.variables)
+                        messages = agent.build_messages(last_output, ctx.variables)
+                        output = agent._llm_round(messages)
                         rounds += 1
 
                 ctx.variables.pop("__tool_last__", None)
@@ -186,7 +198,7 @@ class GraphRunner:
 
             ctx.record_step(
                 node=current_node,
-                prompt=None,
+                prompt=prompt_text,
                 result=output,
                 neighbours=neighbors,
                 decision={"next_node": next_node, "rationale": rationale, "confidence": confidence},
@@ -202,7 +214,7 @@ class GraphRunner:
                 raise AssertionError(f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}")
 
             current_node = next_node
-            
+
             is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
             if not is_router:
                 last_output = output
