@@ -1,6 +1,7 @@
 import logging
 import json
 import enum
+import re
 
 from typing import Any, Dict, Union, Callable, Optional, List, Set, Tuple, get_args, get_origin
 from pydantic import BaseModel, ValidationError
@@ -48,6 +49,7 @@ class LLMAgent(Agent):
 
         allowed_tools: Optional[List[str]] = None,
         max_tool_rounds: int = 0,
+        schema_hint: str = "json"
     ):
         super().__init__(name=name)
         self.prompt_template = prompt_template
@@ -66,9 +68,10 @@ class LLMAgent(Agent):
 
         self.allowed_tools: Set[str] = set(allowed_tools or [])
         self.max_tool_rounds = max(0, int(max_tool_rounds))
+        self.schema_hint = (schema_hint or "json").lower()
 
-        if self.route_field and hasattr(response_model, "model_fields"):
-            fld = response_model.model_fields.get(self.route_field)
+        if self.route_field and hasattr(self.response_model_cls, "model_fields"):
+            fld = self.response_model_cls.model_fields.get(self.route_field)
             if not fld:
                 raise ValueError(f"[{self.name}] route_field '{self.route_field}' not found in response model.")
             ann = getattr(fld, "annotation", None)
@@ -97,24 +100,45 @@ class LLMAgent(Agent):
         if self.prompt_builder:
             return self.prompt_builder(input_model, context)
 
-        data = (
-            input_model.model_dump()
-            if hasattr(input_model, "model_dump")
-            else getattr(input_model, "__dict__", input_model)
-        )
-        tmpl = Template(self.prompt_template)
-        return tmpl.safe_substitute(
+        data = (input_model.model_dump()
+                if hasattr(input_model, "model_dump")
+                else getattr(input_model, "__dict__", input_model))
+        root = {"input": data, "context": context}
+
+        base = Template(self.prompt_template).safe_substitute(
             input=json.dumps(data, ensure_ascii=False, indent=2),
             context=json.dumps(context, ensure_ascii=False, indent=2),
         )
+
+        def _get_path(obj, path):
+            cur = obj
+            for part in path.split("."):
+                if isinstance(cur, dict):
+                    cur = cur.get(part)
+                else:
+                    cur = getattr(cur, part, None)
+                if cur is None:
+                    break
+            return cur
+
+        def repl(m):
+            path = m.group(1)  
+            val = _get_path(root, path)
+            return "null" if val is None else json.dumps(val, ensure_ascii=False)
+
+        return re.sub(r"\$\{([a-zA-Z_][\w\.]+)\}", repl, base)
 
     def build_messages(self, input_model: BaseModel, context: Dict[str, Any]) -> List[Dict[str, str]]:
         prompt = self.build_prompt(input_model, context)
 
         msgs: List[Dict[str, str]] = [
             {"role": "system", "content": "You are a *precise* JSON generator. Return ONLY valid JSON for the schema."},
-            {"role": "user", "content": prompt},
         ]
+        hint = self._schema_hint_text(self.schema_hint)
+        if hint:
+            msgs.append({"role": "system", "content": hint})
+
+        msgs.append({"role": "user", "content": prompt})
 
         last_tool = context.get("__tool_last__")
         if last_tool:
@@ -124,6 +148,33 @@ class LLMAgent(Agent):
             })
 
         return msgs
+    
+    def _schema_hint_text(self, style: str) -> str:
+        try:
+            cls = self.response_model_cls
+            schema = cls.model_json_schema()
+        except Exception:
+            return ""
+
+        style = (style or "json").lower()
+        if style == "none":
+            return ""
+        if style == "schema":
+                return "Output MUST match this JSON Schema:\n" + json.dumps(schema, ensure_ascii=False)
+        if style == "fields":
+            props = schema.get("properties", {}) or {}
+            req = set(schema.get("required", []) or [])
+            lines = []
+            for k, v in props.items():
+                t = v.get("type", "object")
+                if isinstance(t, list):
+                    t = "/".join(map(str, t))
+                star = " (required)" if k in req else ""
+                lines.append(f"- {k}: {t}{star}")
+            return "Return a single JSON object with these fields:\n" + "\n".join(lines)
+        props = (schema.get("properties") or {}).keys()
+        shape = {k: None for k in props}
+        return "Return ONLY valid JSON of this shape:\n" + json.dumps(shape, ensure_ascii=False)
 
     def _llm_round(self, messages: List[Dict[str, str]]) -> BaseModel:
         raw = self.adapter.generate(messages=messages, response_model=self.response_model_cls)
