@@ -1,7 +1,9 @@
 import logging
+import json
 
 from typing import Any, Dict, Callable, Optional, List, Set, Tuple
 from pydantic import BaseModel, ValidationError
+from string import Template
 
 from aigraph.interfaces.ollama import LLMInterface
 
@@ -20,7 +22,11 @@ class Agent:
         context: Dict[str, Any],
         last_output: Optional[BaseModel],
     ) -> Tuple[Optional[Any], str, float]:
-        return None, "No routing protocol defined", 1.0
+        if not neighbors:
+            return None, "No neighbors", 1.0
+        if len(neighbors) == 1:
+            return neighbors[0], "Only neighbor", 1.0
+        return None, "No routing protocol defined", 0.5
 
 
 class LLMAgent(Agent):
@@ -74,10 +80,15 @@ class LLMAgent(Agent):
     def build_prompt(self, input_model: BaseModel, context: Dict[str, Any]) -> str:
         if self.prompt_builder:
             return self.prompt_builder(input_model, context)
-        return self.prompt_template.format(input=input_model.model_dump(), context=context)
 
-    def _llm_round(self, prompt: str, schema: Dict[str, Any]) -> BaseModel:
-        raw = self.adapter.generate(prompt=prompt, response_schema=schema)
+        tmpl = Template(self.prompt_template)
+        return tmpl.safe_substitute(
+            input=json.dumps(input_model.model_dump(), ensure_ascii=False, indent=2),
+            context=json.dumps(context, ensure_ascii=False, indent=2),
+        )
+
+    def _llm_round(self, prompt: str) -> BaseModel:
+        raw = self.adapter.generate(prompt=prompt, response_model=self.response_model)
         self.logger.debug("Raw LLM response: %s", raw)
         try:
             return self.response_model.model_validate_json(raw)
@@ -88,8 +99,8 @@ class LLMAgent(Agent):
     def process(self, input_model: BaseModel, context: Dict[str, Any]) -> BaseModel:
         self.logger.info("Agent '%s' processing input: %s", self.name, input_model)
         prompt = self.build_prompt(input_model, context)
-        schema = self.response_model.model_json_schema()
-        return self._llm_round(prompt, schema)
+        return self._llm_round(prompt)
+
 
     def route(
         self,
