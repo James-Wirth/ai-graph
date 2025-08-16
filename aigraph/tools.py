@@ -1,6 +1,7 @@
 import logging
+import inspect
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 from pydantic import BaseModel
 
 
@@ -20,12 +21,31 @@ class Tool:
 
     def call(self, input: Dict[str, Any]) -> ToolResult:
         raise NotImplementedError
+    
 
+class FunctionTool(Tool):
+    def __init__(self, fn: Callable, name: Optional[str] = None, description: Optional[str] = None):
+        super().__init__(name or fn.__name__)
+        self.fn = fn
+        self.description = (description or fn.__doc__ or "").strip()
+        self._signature = inspect.signature(fn)
 
-class EchoTool(Tool):
     def call(self, input: Dict[str, Any]) -> ToolResult:
-        self.logger.info("EchoTool called with: %s", input)
-        return ToolResult(name=self.name, input=input, output=input, success=True)
+        payload = input or {}
+        try:
+            out = self.func(**payload)  
+            return ToolResult(name=self.name, input=payload, output=out, success=True)
+        except TypeError as e:
+            return ToolResult(name=self.name, input=payload, output=None, success=False, error=f"Bad arguments: {e}")
+        except Exception as e:
+            self.logger.exception("Tool '%s' crashed", self.name)
+            return ToolResult(name=self.name, input=payload, output=None, success=False, error=str(e))
+
+
+def tool(fn: Optional[Callable] = None, name: Optional[str] = None, description: Optional[str] = None):
+    def wrap(_fn: Callable) -> FunctionTool:
+        return FunctionTool(_fn, name=name, description=description)
+    return wrap(fn) if fn else wrap
 
 
 class ToolRegistry:
