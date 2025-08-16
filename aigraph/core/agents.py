@@ -53,9 +53,10 @@ class LLMAgent(Agent):
         self.prompt_template = prompt_template
         self.prompt_builder = prompt_builder
 
-        if callable(response_model) and not isinstance(response_model, type):
-            response_model = response_model()  
-        self.response_model = response_model
+        if isinstance(response_model, type):
+            self.response_model_cls = response_model
+        else:
+            self.response_model_cls = response_model.__class__
 
         self.adapter = interface
 
@@ -125,10 +126,10 @@ class LLMAgent(Agent):
         return msgs
 
     def _llm_round(self, messages: List[Dict[str, str]]) -> BaseModel:
-        raw = self.adapter.generate(messages=messages, response_model=self.response_model)
+        raw = self.adapter.generate(messages=messages, response_model=self.response_model_cls)
         self.logger.debug("Raw LLM response: %s", raw)
         try:
-            return self.response_model.model_validate_json(raw)
+            return self.response_model_cls.model_validate_json(raw)
         except ValidationError:
             self.logger.error("Validation failed. Raw output: %s", raw)
             raise
