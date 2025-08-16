@@ -45,7 +45,7 @@ class GraphRunner:
         self.graph = graph
         self.tool_registry = tool_registry or ToolRegistry()
         self.max_steps = max_steps
-        self.logger = logging.getLogger("llmgraph.runner")
+        self.logger = logging.getLogger("aigraph.runner")
 
         for n, data in self.graph.nodes(data=True):
             agent = data.get("agent")
