@@ -1,3 +1,5 @@
+import re
+
 from typing import Any, Dict, List, Type, Union
 from pydantic import BaseModel, ValidationError
 
@@ -92,5 +94,6 @@ class OllamaInterface(LLMInterface):
             ),
         }]
         content3 = self._chat(messages2, fmt="json")
+        content3 = re.sub(r"^```(?:json)?\s*|\s*```$", "", content3.strip())
         model_cls.model_validate_json(content3)
         return content3
