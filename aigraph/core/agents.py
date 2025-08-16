@@ -2,7 +2,7 @@ import logging
 import json
 import enum
 
-from typing import Any, Dict, Callable, Optional, List, Set, Tuple, get_args, get_origin
+from typing import Any, Dict, Union, Callable, Optional, List, Set, Tuple, get_args, get_origin
 from pydantic import BaseModel, ValidationError
 from string import Template
 
@@ -78,7 +78,7 @@ class LLMAgent(Agent):
                     return set()
                 origin = get_origin(ann_type)
                 args = get_args(ann_type)
-                if origin is Optional or (origin is getattr(__import__('typing'), 'Union', None) and type(None) in args):
+                if origin is Union and args and type(None) in args:
                     return {v for a in args if a is not type(None) for v in _allowed(a)}
                 from typing import Literal
                 if origin is Literal:
