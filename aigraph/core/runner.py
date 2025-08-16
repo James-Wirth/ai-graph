@@ -6,8 +6,8 @@ import uuid
 from typing import Any, Dict, Optional, List, Tuple
 from pydantic import BaseModel
 
-from aigraph.agents import Agent, LLMAgent
-from aigraph.tools import ToolRegistry, ToolResult
+from aigraph.core.agents import Agent, LLMAgent
+from aigraph.core.tools import ToolRegistry, ToolResult
 
 class ExecutionContext:
     def __init__(self, run_id: Optional[str] = None):

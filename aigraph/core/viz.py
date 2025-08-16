@@ -7,7 +7,7 @@ import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from aigraph.agents import Agent, LLMAgent
+from aigraph.core.agents import Agent, LLMAgent
 
 
 def _compute_layout(G: nx.DiGraph) -> Dict[Any, Tuple[float, float]]:

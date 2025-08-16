@@ -1,7 +1,7 @@
 import networkx as nx
 
 from typing import Dict, Any
-from aigraph.agents import Agent, LLMAgent
+from aigraph.core.agents import Agent, LLMAgent
 
 def graph_from_agents(agents: Dict[Any, Agent], start: Any) -> nx.DiGraph:
     g = nx.DiGraph()
