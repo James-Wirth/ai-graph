@@ -87,14 +87,28 @@ class GraphRunner:
                     try:
                         tr = self._maybe_execute_tool(agent, output.tool_call)
                         tools_used.append(tr)
-                        ctx.variables.setdefault("tools", {})[tr.name] = tr.model_dump()
+                        ctx.variables["__tool_last__"] = {
+                            "name": tr.name,
+                            "input": tr.input,
+                            "output": tr.output,
+                            "success": tr.success,
+                            "error": tr.error,
+                            "metadata": tr.metadata,
+                        }
+
                         output = agent.process(last_output, ctx.variables)
                         rounds += 1
+
+                        if not getattr(output, "tool_call", None):
+                            break
+
                     except Exception as e:
                         self.logger.error("Tool execution failed for agent '%s': %s", agent.name, e)
-                        ctx.variables.setdefault("tool_errors", []).append(str(e))
+                        ctx.variables["__tool_last__"] = {"name": getattr(output.tool_call, "name", "?"), "success": False, "error": str(e)}
                         output = agent.process(last_output, ctx.variables)
                         rounds += 1
+
+                ctx.variables.pop("__tool_last__", None)
 
             neighbors = list(self.graph.neighbors(current_node))
             next_node, rationale, confidence = agent.route(neighbors, ctx.variables, output)
