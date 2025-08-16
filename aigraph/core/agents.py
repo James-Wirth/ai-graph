@@ -48,7 +48,6 @@ class LLMAgent(Agent):
         prompt_builder: Optional[Callable[[BaseModel, Dict[str, Any]], str]] = None,
 
         allowed_tools: Optional[List[str]] = None,
-        max_tool_rounds: int = 0,
         schema_hint: str = "json"
     ):
         super().__init__(name=name)
@@ -67,7 +66,6 @@ class LLMAgent(Agent):
         self.route_selector = route_selector
 
         self.allowed_tools: Set[str] = set(allowed_tools or [])
-        self.max_tool_rounds = max(0, int(max_tool_rounds))
         self.schema_hint = (schema_hint or "json").lower()
 
         if self.route_field and hasattr(self.response_model_cls, "model_fields"):
@@ -139,14 +137,6 @@ class LLMAgent(Agent):
             msgs.append({"role": "system", "content": hint})
 
         msgs.append({"role": "user", "content": prompt})
-
-        last_tool = context.get("__tool_last__")
-        if last_tool:
-            msgs.append({
-                "role": "tool",
-                "content": json.dumps(last_tool, ensure_ascii=False),
-            })
-
         return msgs
     
     def _schema_hint_text(self, style: str) -> str:
@@ -160,7 +150,7 @@ class LLMAgent(Agent):
         if style == "none":
             return ""
         if style == "schema":
-                return "Output MUST match this JSON Schema:\n" + json.dumps(schema, ensure_ascii=False)
+                return "Output must match this JSON Schema:\n" + json.dumps(schema, ensure_ascii=False)
         if style == "fields":
             props = schema.get("properties", {}) or {}
             req = set(schema.get("required", []) or [])
@@ -174,7 +164,7 @@ class LLMAgent(Agent):
             return "Return a single JSON object with these fields:\n" + "\n".join(lines)
         props = (schema.get("properties") or {}).keys()
         shape = {k: None for k in props}
-        return "Return ONLY valid JSON of this shape:\n" + json.dumps(shape, ensure_ascii=False)
+        return "Return only valid JSON of this shape:\n" + json.dumps(shape, ensure_ascii=False)
 
     def _llm_round(self, messages: List[Dict[str, str]]) -> BaseModel:
         raw = self.adapter.generate(messages=messages, response_model=self.response_model_cls)
