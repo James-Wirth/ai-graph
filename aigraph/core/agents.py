@@ -37,12 +37,19 @@ class LLMAgent(Agent):
         route_field: Optional[str] = None,
         route_selector: Optional[Callable[[BaseModel, Dict[str, Any]], Optional[str]]] = None,
 
+        prompt_builder: Optional[Callable[[BaseModel, Dict[str, Any]], str]] = None,
+
         allowed_tools: Optional[List[str]] = None,
         max_tool_rounds: int = 0,
     ):
         super().__init__(name=name)
         self.prompt_template = prompt_template
+        self.prompt_builder = prompt_builder
+
+        if callable(response_model) and not isinstance(response_model, type):
+            response_model = response_model()  
         self.response_model = response_model
+
         self.adapter = interface
 
         self.edges = edges or {}
@@ -65,6 +72,8 @@ class LLMAgent(Agent):
                     )
 
     def build_prompt(self, input_model: BaseModel, context: Dict[str, Any]) -> str:
+        if self.prompt_builder:
+            return self.prompt_builder(input_model, context)
         return self.prompt_template.format(input=input_model.model_dump(), context=context)
 
     def _llm_round(self, prompt: str, schema: Dict[str, Any]) -> BaseModel:
