@@ -1,7 +1,8 @@
 import logging
 import json
+import enum
 
-from typing import Any, Dict, Callable, Optional, List, Set, Tuple
+from typing import Any, Dict, Callable, Optional, List, Set, Tuple, get_args, get_origin
 from pydantic import BaseModel, ValidationError
 from string import Template
 
@@ -65,17 +66,31 @@ class LLMAgent(Agent):
         self.allowed_tools: Set[str] = set(allowed_tools or [])
         self.max_tool_rounds = max(0, int(max_tool_rounds))
 
-        if self.route_field and hasattr(response_model, 'model_fields'):
-            field = response_model.model_fields.get(self.route_field)
-            ann = getattr(field, "annotation", None) if field else None
-            enum_args = getattr(ann, "__args__", None)
-            if enum_args:
-                options = {str(x) for x in enum_args}
-                unknown = set(self.edges.keys()) - options
+        if self.route_field and hasattr(response_model, "model_fields"):
+            fld = response_model.model_fields.get(self.route_field)
+            if not fld:
+                raise ValueError(f"[{self.name}] route_field '{self.route_field}' not found in response model.")
+            ann = getattr(fld, "annotation", None)
+
+            def _allowed(ann_type) -> Set[str]:
+                if ann_type is None:
+                    return set()
+                origin = get_origin(ann_type)
+                args = get_args(ann_type)
+                if origin is Optional or (origin is getattr(__import__('typing'), 'Union', None) and type(None) in args):
+                    return {v for a in args if a is not type(None) for v in _allowed(a)}
+                from typing import Literal
+                if origin is Literal:
+                    return {str(v) for v in args}
+                if isinstance(ann_type, type) and issubclass(ann_type, enum.Enum):
+                    return {str(m.value) for m in ann_type}
+                return set()
+
+            opts = _allowed(ann)
+            if opts:
+                unknown = set(self.edges.keys()) - opts
                 if unknown:
-                    raise ValueError(
-                        f"[{self.name}] edges contain keys not in response model '{self.route_field}': {unknown}"
-                    )
+                    raise ValueError(f"[{self.name}] edges contain keys not in response model '{self.route_field}': {unknown}")
 
     def build_prompt(self, input_model: BaseModel, context: Dict[str, Any]) -> str:
         if self.prompt_builder:
@@ -143,8 +158,11 @@ class LLMAgent(Agent):
             elif self.route_field and hasattr(last_output, self.route_field):
                 key = getattr(last_output, self.route_field)
 
-        if key is None:
-            return None, "No route key produced", 0.5
+        if key is not None:
+            if isinstance(key, enum.Enum):
+                key = key.value
+            if not isinstance(key, str):
+                key = str(key)
 
         if self.edges:
             if key not in self.edges:
