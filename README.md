@@ -81,7 +81,9 @@ class Answer(BaseModel):
     next="end_node",
     prompt="""
     You are Isaac Newton. Answer this question:
+
     Question: ${param.question}
+    Data: ${param.data}
     """,
 )
 def newton_node(
@@ -95,7 +97,9 @@ def newton_node(
     next="end_node",
     prompt="""
     You are Albert Einstein. Answer this question:
+    
     Question: ${param.question}
+    Data: ${param.data}
     """,
 )
 def einstein_node(
