@@ -29,7 +29,7 @@ app = ag.App(
 ### 2. Make a "start" node 
 
 ```python
-class Input(BaseModel):
+class BundledInput(BaseModel):
     question: str
     data: Optional[Dict[str, float]] = None
 
@@ -37,15 +37,14 @@ class Input(BaseModel):
 def start_node(
     question: str = ag.From("question"),
     data: Optional[Dict[str, float]] = ag.From("data"),
-) -> Input:
+) -> BundledInput:
     """
     - Python code in the function body executes when the node is reached.
-    - The function return is passed to the next node as the input.
+    - The return from each function is passed to the next node.
 
-    - In this example, we'll just format the input arguments into
-      a nice Pydantic schema.
+    - In this example, we'll just bundle the initial arguments into a nice Pydantic schema.
     """
-    return Input(question=question, data=data)
+    return BundledInput(question=question, data=data)
 ```
 
 We've specified the next node (`routing_node`) in the decorator. The compiler will automatically create the edge when the graph is run.
@@ -61,7 +60,7 @@ We've specified the next node (`routing_node`) in the decorator. The compiler wi
     - "einstein_node" for relativity.
 
     Question:
-    ${question}
+    ${param.question}
     """,
 )
 def routing_node(
@@ -75,6 +74,7 @@ def routing_node(
     return ag.accept_llm()
 ```
 
+We've injected the question argument into the prompt with `${param.question}`. 
 The routing agent returns either `"netwon_node"` or `"einstein_node"` depending on the question, and proceeds to that node. 
 
 ### 4.1 Implementing the answers with "step" nodes for Newton and Einstein.
@@ -151,6 +151,7 @@ def newton_node(
     return ag.accept_llm()
 ```
 
+The tool result has been injected into the prompt with `${tool.force}`.
 
 ### 5. Make an "end" node
 
