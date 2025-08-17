@@ -92,7 +92,7 @@ class Answer(BaseModel):
     """,
 )
 def newton_node(
-    question: str = From("question"),
+    question: str = ag.From("question"),
     data: Optional[Dict[str, float]] = ag.From("data"),
 ) -> Answer:
     return ag.accept_llm()
@@ -106,7 +106,7 @@ def newton_node(
     """,
 )
 def einstein_node(
-    question: str = From("question"),
+    question: str = ag.From("question"),
     data: Optional[Dict[str, float]] = ag.From("data"),
 ) -> Answer:
     return ag.accept_llm()
@@ -144,9 +144,9 @@ def compute_force(mass: float, acceleration: float) -> Optional[float]:
     }],
 )
 def newton_node(
-    question: str = From("question"),
-    data: Optional[Dict[str, float]] = From("data"),
-    force: Optional[float] = ToolValue("force_tool", field="output"),
+    question: str = ag.From("question"),
+    data: Optional[Dict[str, float]] = ag.From("data"),
+    force: Optional[float] = ag.ToolValue("force_tool", field="output"),
 ) -> Answer:
     return ag.accept_llm()
 ```
@@ -182,25 +182,15 @@ The output from the graph above:
 
 ## Highlights
 
-### Declarative Graph Construction
+- **Declarative Graph Construction**: Define workflow nodes with decorators (`@start`, `@step`, `@route`, `@end`). Each node can prompt an LLM, run custom Python, and more!
 
-Define workflow nodes with decorators (`@start`, `@step`, `@route`, `@end`). Each node can prompt an LLM, run custom Python, and more!
+- **Automatic Graph Compilation**: The API automatically compiles your code into a `networkx.DiGraph`. This makes it easy to view the graph structure and debug the workflow.
 
-### Automatic Graph Compilation
+- **Structured Inputs & Outputs**: Robust schema validation using **Pydantic** models.
 
-The API automatically compiles your code into a `networkx.DiGraph`. This makes it easy to view the graph structure and debug the workflow.
+- **Custom Tooling**: Define tools that run automatically upon reaching a node, whose results are stored in a global `$context.tools` and can be dynamically injected into the LLM prompt. 
 
-### Structured Inputs & Outputs
-
-Robust schema validation using **Pydantic** models.
-
-### Custom Tooling
-
-Define tools that run automatically upon reaching a node, whose results are stored in a global `$context.tools` and can be dynamically injected into the LLM prompt. 
-
-### Branching & Routing
-
-`@route` nodes use LLMs (or custom Python selectors) to choose the next edge. The options are strongly typed.
+- **Branching & Routing**: `@route` nodes use LLMs (or custom Python selectors) to choose the next edge. The options are strongly typed.
 
 ## Execution Context & Artifacts 
 
