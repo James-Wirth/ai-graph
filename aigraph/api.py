@@ -1,290 +1,186 @@
-################################
-# AIGraph "API"...
-
-# This file contains the implementation of our decorator-driven approach
-# for constructing the graph of agents
-
-# Hopefully it's helpful...
-################################
-
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union, Generic, TypeVar, get_origin, get_args, Literal
 
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union, Literal, get_origin, get_args
-from typing import Literal as TypingLiteral, Optional as TypingOptional
+from pydantic import BaseModel, ValidationError, create_model
 
-from pydantic import BaseModel, create_model
-
-from aigraph.core.agents import Agent, LLMAgent
+from aigraph.core.agents import Agent
 from aigraph.core.graphs import graph_from_agents
 from aigraph.core.runner import GraphRunner
-from aigraph.core.tools import ToolRegistry, ToolResult
-from aigraph.core.viz import mermaid_from_graph, render_workflow_graph
-from aigraph.interfaces.ollama import OllamaInterface
+from aigraph.core.tools import ToolRegistry, FunctionTool
+from aigraph.interfaces.ollama import OllamaInterface, LLMInterface
 
-from aigraph.core.injection import FromPayload, FromVar, FromTool, Context, Payload, resolve_fn_args
+################################
+# RunScope (defines the global context)
+# You can access this stuff in the function body of each node
+################################
 
-
+from contextvars import ContextVar
 
 class _RunScope:
-    __slots__ = ("payload", "vars", "artifacts", "tool_registry", "app_cfg",
-                 "llm_output", "node_returns_type")
-
+    __slots__ = ("payload", "vars", "artifacts", "tool_registry", "app_cfg", "llm_iface")
     def __init__(self) -> None:
         self.payload: Any = None
         self.vars: Dict[str, Any] = {}
         self.artifacts: List[Dict[str, Any]] = []
         self.tool_registry: Optional[ToolRegistry] = None
         self.app_cfg: Optional["AppConfig"] = None
-        self.llm_output: Any = None
-        self.node_returns_type: Any = None
+        self.llm_iface: Optional[LLMInterface] = None
 
 _scope_var: ContextVar[_RunScope] = ContextVar("_aigraph_scope", default=_RunScope())
+def _scope() -> _RunScope: return _scope_var.get()
 
-def _scope() -> _RunScope:
-    return _scope_var.get()
+def data() -> Any: return _scope().payload
+def set_data(value: Any) -> None: _scope().payload = value
+def vars() -> Dict[str, Any]: return _scope().vars
 
-def data() -> Any:
-    return _scope().payload
+################################
+# This is to let you register tools
+# (that you call manually in the function body, for now...)
+################################
 
-def set_data(value: Any) -> None:
-    _scope().payload = value
+_PENDING_TOOLS: List[FunctionTool] = []
 
-def vars() -> Dict[str, Any]:
-    return _scope().vars
+def tool(*args, **kwargs):
+    if args and isinstance(args[0], str):
+        name = args[0]
+        payload = dict(kwargs)
+        reg = _scope().tool_registry
+        if not reg:
+            raise RuntimeError("No ToolRegistry available in this run scope.")
+        return reg.get(name).call(payload)
 
-def tool(name: str, **kwargs) -> ToolResult:
-    reg = _scope().tool_registry
-    if not reg:
-        raise RuntimeError("No ToolRegistry in the run scope.")
-    t = reg.get(name)
-    return t.call(kwargs)
+    name = kwargs.pop("name", None)
+    description = kwargs.pop("description", None)
+
+    def _decorator(fn: Callable) -> FunctionTool:
+        ft = FunctionTool(fn, name=name, description=description)
+        _PENDING_TOOLS.append(ft)
+        return ft
+
+    if args and callable(args[0]):
+        return _decorator(args[0])
+    return _decorator
 
 def emit(artifact: Dict[str, Any]) -> None:
     _scope().artifacts.append(artifact)
 
-
-@dataclass
-class Result:
-    payload: Any
-    artifacts: list[dict[str, Any]] | None = None
-
-
-def _capture_sig(fn):
-    specs = []
-    sig = inspect.signature(fn)
-    for p in sig.parameters.values():
-        default = p.default if p.default is not inspect._empty else None
-        specs.append((p.name, p.annotation, default))
-    return specs
-
-
 ################################
-# Node & Tool Metadata
+# LLM returns 
 ################################
 
-@dataclass
-class ToolSpec:
-    name: str
-    required: bool = False
-    argmap: Dict[str, Any] = field(default_factory=dict)
-    alias: Optional[str] = None
+def llm(*, model: Type[BaseModel], prompt: str, system: Optional[str] = None, temperature: Optional[float] = None) -> BaseModel:
+    sc = _scope()
+    if sc.app_cfg is None:
+        raise RuntimeError("Application config missing in scope; cannot call llm().")
+    if sc.llm_iface is None:
+        sc.llm_iface = OllamaInterface(model=sc.app_cfg.model, temperature=temperature or sc.app_cfg.temperature)
 
-class _AcceptLLM:
-    pass
+    messages: List[Dict[str, str]] = []
+    messages.append({"role": "system", "content": "You are a precise JSON generator. Return ONLY valid JSON for the schema. No extra text, no code fences."})
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
 
-def accept_llm() -> _AcceptLLM:
-    return _AcceptLLM()
+    raw = sc.llm_iface.generate(messages=messages, response_model=model)
+    try:
+        return model.model_validate_json(raw)
+    except ValidationError as e:
+        raise TypeError(f"LLM returned invalid JSON for {model.__name__}: {e}") from e
 
-def llm(typ: Optional[type[BaseModel]] = None):
-    scope = _scope()
-    obj = scope.llm_output
-    if obj is None:
-        return None
-    T = typ or scope.node_returns_type
-    if isinstance(T, type) and issubclass(T, BaseModel):
-        return T.model_validate(obj)
-    return obj
+################################
+# Routing node returns
+################################
+
+T = TypeVar("T")
+
+class Route(Generic[T]):
+    """Return from a @route function: choose(case) or delegate(prompt=...)."""
+    def __init__(self, case: Optional[T], prompt: Optional[str] = None):
+        self.case = case
+        self.prompt = prompt
+
+    @classmethod
+    def choose(cls, case: T) -> "Route[T]":
+        return cls(case=case, prompt=None)
+
+    @classmethod
+    def delegate(cls, *, prompt: str) -> "Route[T]":
+        return cls(case=None, prompt=prompt)
+
+################################
+# Node metadata
+################################
 
 @dataclass
 class NodeDef:
     func: Callable
-    kind: Literal["start", "step", "route", "end", "handoff"]
+    kind: Literal["start", "step", "route", "end"]
     name: str
-    prompt: Optional[str] = None
-    tools: List[ToolSpec] = field(default_factory=list)
     next_default: Optional[str] = None
-    cases: Dict[str, str] = field(default_factory=dict)
-    route_selector: Optional[Callable[[Any, Dict[str, Any]], Optional[str]]] = None
-    schema_hint: Literal["json", "fields", "schema", "none"] = "json"
-    returns: Optional[type[BaseModel]] = None
-    param_specs: List[Tuple[str, Any]] = field(default_factory=list)
+    cases: List[str] = None  
+    returns: Optional[Type[BaseModel]] = None
 
 ################################
-# AppConfig simply defines the key top-level variables for our app
+# AppConfig (general high-level variables)
 ################################
 
 class AppConfig(BaseModel):
     name: str = "App"
     model: str = "llama3"
     temperature: float = 0.1
-    tools: List[str] = []  
+
+################################
+# Decorators 
+# (We love to hate them and hate to love them)
+################################
 
 _NODE_REGISTRY: Dict[str, NodeDef] = {}
 
-
 def _func_name(f: Union[str, Callable, None]) -> Optional[str]:
-    if f is None:
-        return None
+    if f is None: return None
     return f if isinstance(f, str) else f.__name__
-
-################################
-# These classes define the decorators, i.e.
-
-# @aigraph.start
-# @aigraph.step
-# @aigraph.route
-# @aigraph.end
-################################
 
 class _StartDecorator:
     def __call__(self, fn: Optional[Callable] = None, *, next: Union[str, Callable, None] = None):
         def wrap(f: Callable) -> Callable:
-            _NODE_REGISTRY[f.__name__] = NodeDef(
-                func=f,
-                kind="start",
-                name=f.__name__,
-                param_specs=_capture_sig(f),
-                next_default=_func_name(next),   
-            )
-            _ensure_return_type(_NODE_REGISTRY[f.__name__], f)
+            _ensure_single_param(f, "@start")
+            nd = NodeDef(func=f, kind="start", name=f.__name__, next_default=_func_name(next))
+            _ensure_return_type(nd, f)
+            _NODE_REGISTRY[f.__name__] = nd
             return f
         return wrap if fn is None else wrap(fn)
 
 class _StepDecorator:
-    def __call__(
-        self,
-        fn: Optional[Callable] = None,
-        *,
-        prompt: Optional[str] = None,
-        tools: Optional[List[Union[str, Dict[str, Any], ToolSpec]]] = None,
-        next: Optional[Union[str, Callable]] = None,
-        schema_hint: Literal["json", "fields", "schema", "none"] = "json",
-        returns: Optional[type[BaseModel]] = None,
-    ):
-        def _normalize(ts: List[Union[str, Dict[str, Any], ToolSpec]]) -> List[ToolSpec]:
-            out: List[ToolSpec] = []
-            for t in ts:
-                if isinstance(t, ToolSpec):
-                    out.append(t)
-                elif isinstance(t, str):
-                    out.append(ToolSpec(name=t))
-                elif isinstance(t, dict):
-                    out.append(ToolSpec(**t))
-                else:
-                    raise TypeError(f"Unsupported tool spec: {t!r}")
-            return out
-
+    def __call__(self, fn: Optional[Callable] = None, *, next: Optional[Union[str, Callable]] = None):
         def wrap(f: Callable) -> Callable:
-            inferred_returns = returns
-            ra = inspect.signature(f).return_annotation
-            if inferred_returns is None and isinstance(ra, type) and issubclass(ra, BaseModel):
-                inferred_returns = ra
-            _NODE_REGISTRY[f.__name__] = NodeDef(
-                func=f,
-                kind="step",
-                name=f.__name__,
-                prompt=prompt,
-                tools=_normalize(list(tools or [])),
-                next_default=_func_name(next) if next else None,
-                schema_hint=schema_hint,
-                returns=inferred_returns,
-                param_specs=_capture_sig(f),
-            )
-            _ensure_return_type(_NODE_REGISTRY[f.__name__], f)
+            _ensure_single_param(f, "@step")
+            nd = NodeDef(func=f, kind="step", name=f.__name__, next_default=_func_name(next))
+            _ensure_return_type(nd, f)
+            _NODE_REGISTRY[f.__name__] = nd
             return f
         return wrap if fn is None else wrap(fn)
 
 class _RouteDecorator:
-    def __call__(
-        self,
-        fn: Optional[Callable] = None,
-        *,
-        prompt: str,
-        cases: Optional[Mapping[str, Union[str, Callable]]] = None,
-        tools: Optional[List[Union[str, Dict[str, Any], ToolSpec]]] = None,
-        route_selector: Optional[Callable[[Any, Dict[str, Any]], Optional[str]]] = None,
-        schema_hint: Literal["json", "fields", "schema", "none"] = "json",
-    ):
-        def _normalize(ts: List[Union[str, Dict[str, Any], ToolSpec]]) -> List[ToolSpec]:
-            out: List[ToolSpec] = []
-            for t in ts:
-                if isinstance(t, ToolSpec):
-                    out.append(t)
-                elif isinstance(t, str):
-                    out.append(ToolSpec(name=t))
-                elif isinstance(t, dict):
-                    out.append(ToolSpec(**t))
-                else:
-                    raise TypeError(f"Unsupported tool spec: {t!r}")
-            return out
-
+    def __call__(self, fn: Optional[Callable] = None, *, cases: List[str]):
         def wrap(f: Callable) -> Callable:
-            ra = inspect.signature(f).return_annotation
-            lit_opts = None
-            if get_origin(ra) in {TypingLiteral, Literal}:
-                lit_opts = tuple(map(str, get_args(ra)))
-            
-            if cases is None:
-                if not lit_opts:
-                    raise RuntimeError(
-                        f"@route '{f.__name__}': provide either cases=... or a Literal[...] return type."
-                    )
-                cdict = {opt: opt for opt in lit_opts}
-            else:
-                cdict = {k: _func_name(v) for k, v in dict(cases).items()}
-                if lit_opts and set(cdict.keys()) != set(lit_opts):
-                    raise RuntimeError(
-                        f"@route '{f.__name__}' cases {sorted(cdict)} must match return Literal {sorted(lit_opts)}"
-                    )
-
-            _NODE_REGISTRY[f.__name__] = NodeDef(
-                func=f,
-                kind="route",
-                name=f.__name__,
-                prompt=prompt,
-                tools=_normalize(list(tools or [])),
-                cases=cdict,
-                route_selector=route_selector,
-                schema_hint=schema_hint,
-                param_specs=_capture_sig(f),
-            )
-            _ensure_return_type(_NODE_REGISTRY[f.__name__], f)
+            _ensure_single_param(f, "@route")
+            nd = NodeDef(func=f, kind="route", name=f.__name__, cases=list(cases or []))
+            _ensure_route_return_type(nd, f)
+            if not nd.cases:
+                raise RuntimeError(f"@route '{f.__name__}' requires non-empty cases=[...].")
+            _NODE_REGISTRY[f.__name__] = nd
             return f
         return wrap if fn is None else wrap(fn)
 
 class _EndDecorator:
     def __call__(self, fn: Callable) -> Callable:
-        _NODE_REGISTRY[fn.__name__] = NodeDef(
-            func=fn,
-            kind="end",
-            name=fn.__name__,
-            param_specs=_capture_sig(fn),   
-        )
-        _ensure_return_type(_NODE_REGISTRY[fn.__name__], fn)
-        return fn
-
-    def handoff(self, fn: Callable) -> Callable:
-        _NODE_REGISTRY[fn.__name__] = NodeDef(
-            func=fn,
-            kind="handoff",
-            name=fn.__name__,
-            param_specs=_capture_sig(fn),   
-        )
-        _ensure_return_type(_NODE_REGISTRY[fn.__name__], fn)
+        _ensure_single_param(fn, "@end")
+        nd = NodeDef(func=fn, kind="end", name=fn.__name__)
+        _ensure_return_type(nd, fn)
+        _NODE_REGISTRY[fn.__name__] = nd
         return fn
 
 start = _StartDecorator()
@@ -292,25 +188,35 @@ step = _StepDecorator()
 route = _RouteDecorator()
 end = _EndDecorator()
 
+################################
+# Result 
+# (Maybe it's useful for this to be here explicitly)
+################################
+
+@dataclass
+class Result:
+    payload: Any
+    artifacts: List[Dict[str, Any]] | None = None
 
 ################################
-# App is the main entrypoint that compiles the decorators into a real graph
-# (by building each Agent instance and connecting them up)
+# App class (compiles the graph and does all the hard stuff, basically)
 ################################
 
 class App:
     def __init__(self, **kwargs) -> None:
         self.cfg = AppConfig(**kwargs)
         self._registry = ToolRegistry()
-        self._compiled: Optional[Tuple[Any, str]] = None  
+        self._compiled: Optional[Tuple[Any, str]] = None
 
-    def register_tool(self, tool) -> None:
+    def register_tool(self, tool: FunctionTool) -> None:
         self._registry.register(tool)
 
     def _compile(self) -> Tuple[Any, str]:
-        self_app = self
         if not _NODE_REGISTRY:
-            raise RuntimeError("No nodes declared. Use @ag.start/@ag.step/@ag.route/@ag.end decorators.")
+            raise RuntimeError("No nodes declared. Use @ag.start/@ag.step/@ag.route/@ag.end.")
+
+        for t in _PENDING_TOOLS:
+            self._registry.register(t)
 
         starts = [n for n in _NODE_REGISTRY.values() if n.kind == "start"]
         if len(starts) != 1:
@@ -321,167 +227,131 @@ class App:
 
         class _PayloadModel(BaseModel):
             payload: Any
-            artifacts: list[dict[str, Any]] | None = None
+            artifacts: List[Dict[str, Any]] | None = None
 
         class _PyAgent(Agent):
             def __init__(self, node: NodeDef) -> None:
                 super().__init__(node.name)
                 self.node = node
-                self._llm_agent = None
-                if node.kind in {"start", "step", "end"} and node.prompt:
-                    self._llm_agent = _mk_llm_agent(node)
 
             def process(self, input_model: BaseModel, context: Dict[str, Any]) -> BaseModel:
                 _scope().payload = getattr(input_model, "payload", input_model)
                 _scope().vars = context
                 _scope().tool_registry = self_app._registry
                 _scope().app_cfg = self_app.cfg
-                _scope().artifacts = []
-                _scope().llm_output = None
-                _scope().node_returns_type = self.node.returns
+                _scope().artifacts = []  
 
-                payload = _scope().payload
-                tool_ns = context.get("tools") or {}
-                args = resolve_fn_args(self.node.param_specs, payload, context, tool_ns)
+                raw_payload = _scope().payload
+                sig = inspect.signature(self.node.func)
+                if len(sig.parameters) != 1:
+                    raise TypeError(f"Node '{self.node.name}' must accept exactly one argument (payload).")
 
-                if self._llm_agent is not None and self.node.kind != "route":
-                    prompt_text = self._llm_agent.build_prompt(input_model, context)
-                    context.setdefault("_debug", {})["last_prompt"] = prompt_text
-                    messages = self._llm_agent.build_messages(input_model, context)
-                    
-                    llm_obj = self._llm_agent._llm_round(messages)
-                    parsed = getattr(llm_obj, "payload", llm_obj)
-                    if isinstance(parsed, BaseModel):
-                        parsed = parsed.model_dump()
-                    _scope().llm_output = parsed
+                (param_name, param), = sig.parameters.items()
+                param_ann = param.annotation
+                payload_for_func = raw_payload
+                payload_for_pass = raw_payload  
 
-                rv = self.node.func(**args)
+                if isinstance(param_ann, type) and issubclass(param_ann, BaseModel):
+                    try:
+                        coerced = param_ann.model_validate(raw_payload)
+                        payload_for_func = coerced
+                        payload_for_pass = coerced.model_dump()
+                    except Exception as e:
+                        raise TypeError(
+                            f"Node '{self.node.name}' expected payload of type {param_ann.__name__} but got incompatible input: {e}"
+                        ) from e
 
-                from aigraph.api import _AcceptLLM  
+                rv = self.node.func(payload_for_func)
+                if self.node.kind == "route":
+                    choice = None
+                    if isinstance(rv, Route):
+                        if rv.case is not None:
+                            choice = str(rv.case)
+                        else:
+                            prompt = rv.prompt or ""
+                            import enum
+                            ChoicesEnum = enum.Enum("ChoicesEnum", {c: c for c in self.node.cases})
+                            RouteOut = create_model("RouteOut", choice=(ChoicesEnum, ...))
+                            obj = llm(model=RouteOut, prompt=prompt)
+                            v = getattr(obj, "choice", None)
+                            choice = getattr(v, "value", None)
+                    elif isinstance(rv, str):
+                        choice = rv
+                    else:
+                        try:
+                            import enum
+                            if isinstance(rv, enum.Enum):
+                                choice = str(rv.value)
+                        except Exception:
+                            pass
+
+                    if choice not in self.node.cases:
+                        raise ValueError(
+                            f"Route '{self.node.name}' chose invalid case '{choice}'. Allowed: {sorted(self.node.cases)}"
+                        )
+                    context.setdefault("_route", {})[self.node.name] = choice
+
+                    from pydantic import BaseModel as _BM
+                    passthrough = payload_for_pass
+                    if isinstance(passthrough, _BM):
+                        passthrough = passthrough.model_dump()
+                    return _PayloadModel(payload=passthrough, artifacts=_scope().artifacts or None)
+
                 if isinstance(rv, Result):
-                    payload_out = rv.payload; artifacts_out = rv.artifacts or []
-                elif isinstance(rv, tuple) and len(rv) == 2:
-                    payload_out, artifacts_out = rv
-                elif isinstance(rv, _AcceptLLM):
-                    payload_out, artifacts_out = _scope().llm_output, []
+                    payload_out = rv.payload
+                    artifacts_out = rv.artifacts or []
                 else:
-                    if rv is None:
-                        raise RuntimeError(f"Node '{self.node.name}' returned None; explicit return required.")
-                    payload_out, artifacts_out = rv, []
- 
+                    payload_out = rv
+                    artifacts_out = []
+
+                if self.node.returns and isinstance(self.node.returns, type) and issubclass(self.node.returns, BaseModel):
+                    try:
+                        validated = self.node.returns.model_validate(payload_out)
+                        payload_out = validated.model_dump()
+                    except Exception as e:
+                        raise TypeError(
+                            f"Node '{self.node.name}' returned invalid payload for {self.node.returns.__name__}: {e}"
+                        ) from e
 
                 scope_artifacts = _scope().artifacts or []
                 all_artifacts = (artifacts_out or []) + scope_artifacts
 
-                if self.node.returns and isinstance(self.node.returns, type) and issubclass(self.node.returns, BaseModel):
-                    try:
-                        payload_out = self.node.returns.model_validate(payload_out).model_dump()
-                    except Exception as e:
-                        raise TypeError(
-                            f"Node '{self.node.name}' returned invalid payload for "
-                            f"{self.node.returns.__name__}: {e}"
-                        ) from e
-
                 return _PayloadModel(payload=payload_out, artifacts=all_artifacts or None)
 
-        def _mk_llm_agent(node: NodeDef) -> LLMAgent:
-            if node.kind == "route":
-                choices = tuple(node.cases.keys())
-                if not choices:
-                    raise RuntimeError(f"@route '{node.name}' has no cases; provide cases=... or a Literal[...] return type.")
-                ChoiceLit = TypingLiteral[choices]
-                RouteOut = create_model("RouteOutput", choice=(ChoiceLit, ...))  
-                response_model = RouteOut
-                edges = dict(node.cases)
-                route_field = None if node.route_selector else "choice"
-            else:
-                if node.returns is None:
-                    raise RuntimeError(f"[{node.name}] Missing return type; declare -> Model or returns=Model.")
-                payload_ann, default = node.returns, ...
-                
-                StepOut = create_model("StepOutput", payload=(payload_ann, default))
-                response_model = StepOut
-                edges, route_field = {}, None
+            def route(self, neighbors: List[Any], context: Dict[str, Any], last_output: Optional[BaseModel]):
+                if self.node.kind != "route":
+                    return super().route(neighbors, context, last_output)
+                if not neighbors:
+                    return None, "No neighbors", 1.0
+                choice = (context.get("_route") or {}).get(self.node.name)
+                if choice is None:
+                    return None, "No route choice recorded", 0.1
+                target = choice
+                if target not in neighbors:
+                    raise AssertionError(
+                        f"[{self.node.name}] Route for '{choice}' points to non-neighbor '{target}'."
+                    )
+                return target, f"Route chose '{choice}'", 0.9
 
-            adapter = OllamaInterface(model=self_app.cfg.model, temperature=self_app.cfg.temperature)
-            allowed_names = sorted({s.name for s in node.tools}) or list(self_app.cfg.tools)
-
-            def _prompt_builder(input_model: BaseModel, context: Dict[str, Any]) -> str:
-                payload = getattr(input_model, "payload", input_model)
-                tool_ns = (context.get("tools") or {})
-                args_ns = resolve_fn_args(node.param_specs, payload, context, tool_ns)
-
-                base_env = {
-                    "input": payload,
-                    "payload": payload,
-                    "context": context,
-                    "param": args_ns,
-                    "tool": tool_ns,
-                    **args_ns,  
-                }
-
-                from string import Template
-                import json, re
-
-                base = Template(node.prompt or "").safe_substitute(
-                    input=json.dumps(payload, ensure_ascii=False, indent=2),
-                    context=json.dumps(context, ensure_ascii=False, indent=2),
-                )
-
-                def get_path(obj, path):
-                    cur = obj
-                    for part in path.split("."):
-                        if isinstance(cur, dict):
-                            cur = cur.get(part)
-                        else:
-                            cur = getattr(cur, part, None)
-                        if cur is None:
-                            break
-                    return cur
-
-                def repl(m):
-                    key = m.group(1)
-                    val = get_path(base_env, key) if "." in key else base_env.get(key)
-                    return "null" if val is None else json.dumps(val, ensure_ascii=False)
-
-                return re.sub(r"\$\{([a-zA-Z_][\w\.]+)\}", repl, base)
-
-            return LLMAgent(
-                name=node.name,
-                prompt_template=node.prompt or "You are an AI agent. Return JSON that conforms to the schema.",
-                response_model=response_model,
-                interface=adapter,
-                edges=edges,
-                route_field=route_field,
-                route_selector=node.route_selector,
-                schema_hint=node.schema_hint,
-                prompt_builder=_prompt_builder,
-            )
-
+        self_app = self
         for name, node in _NODE_REGISTRY.items():
-            if node.kind == "route":
-                agents[name] = _mk_llm_agent(node)          
-            elif node.kind in {"start", "step", "end", "handoff"}:
-                agents[name] = _PyAgent(node)                
-            else:
-                raise RuntimeError(f"Unknown node kind '{node.kind}' for node '{name}'.")
+            agents[name] = _PyAgent(node)
 
         G = graph_from_agents(agents, start=start_def.name)
 
         for node in _NODE_REGISTRY.values():
             if node.next_default:
                 if node.next_default not in agents:
-                    raise RuntimeError(f"@step(next=...) references unknown node '{node.next_default}'.")
+                    raise RuntimeError(f"@{node.kind}(next=...) references unknown node '{node.next_default}'.")
                 G.add_edge(node.name, node.next_default)
-
-        for name, agent in agents.items():
-            if isinstance(agent, LLMAgent) and getattr(agent, "edges", None):
-                for _, target in agent.edges.items():
+            if node.kind == "route":
+                for target in (node.cases or []):
                     if target not in agents:
                         raise RuntimeError(
-                            f"Route from '{name}' points to unknown node '{target}'. "
-                            "Use a function name string that matches an @ag.step/@ag.end."
+                            f"@route '{node.name}' case '{target}' points to unknown node. "
+                            "Cases must be step/end function names."
                         )
+                    G.add_edge(node.name, target)
 
         for name, node in _NODE_REGISTRY.items():
             if name in G.nodes:
@@ -496,12 +366,15 @@ class App:
         class _In(BaseModel):
             payload: Any
 
-        runner = GraphRunner(G, tool_registry=self._registry, max_steps=32)
+        runner = GraphRunner(G, tool_registry=self._registry, max_steps=64)
         out, ctx = runner.run(_In(payload=initial_payload), start_node)
+
         if isinstance(out, BaseModel):
-            result = out.model_dump()
+            md = out.model_dump()
+            result = md["payload"] if "payload" in md else md
         else:
             result = out.payload if hasattr(out, "payload") else out
+
         return result, ctx
 
     def graph(self):
@@ -509,6 +382,7 @@ class App:
         return _GraphView(G, start_node)
 
     def viz(self, *, history: Optional[List[Dict[str, Any]]] = None):
+        from aigraph.core.viz import render_workflow_graph
         G, start_node = self._compiled or self._compile()
         fig, _ = render_workflow_graph(G, start=start_node, history=history)
         class _Saver:
@@ -518,6 +392,7 @@ class App:
         return _Saver()
 
     def mermaid(self, *, history: Optional[List[Dict[str, Any]]] = None) -> str:
+        from aigraph.core.viz import mermaid_from_graph
         G, start_node = self._compiled or self._compile()
         return mermaid_from_graph(G, start=start_node, history=history)
 
@@ -532,33 +407,22 @@ class App:
                 return True
         return _Expect(**kwargs)
 
+################################
+# Runner node view 
+################################
+
 def _to_runner_node(node: NodeDef):
     class _RunnerNode:
         def __init__(self, nd: NodeDef):
             self.func = nd.func
             self.kind = nd.kind
             self.name = nd.name
-            self.prompt = nd.prompt
-            self.param_specs = list(nd.param_specs)
-
-            self.tools = []
-            for s in nd.tools:
-                d = {"name": s.name}
-                if s.required:
-                    d["required"] = True
-                if s.argmap:
-                    d["argmap"] = s.argmap
-                if s.alias:
-                    d["as"] = s.alias
-                self.tools.append(d)
-            self.cases = dict(nd.cases)
-            self.route_selector = nd.route_selector
             self.next_default = nd.next_default
-    rn = _RunnerNode(node)
-    return rn
+            self.cases = list(nd.cases or [])
+    return _RunnerNode(node)
 
 ################################
-# Small wrapper for nx.DiGraph
+# Graph view
 ################################
 
 class _GraphView:
@@ -574,28 +438,43 @@ class _GraphView:
         self.G.add_edge(u, v)
         return self
 
-def _reset_nodes_registry() -> None:
-    _NODE_REGISTRY.clear()
+################################
+# Validation helpers
+################################
+
+def _ensure_single_param(fn: Callable, where: str):
+    sig = inspect.signature(fn)
+    if len(sig.parameters) != 1:
+        raise TypeError(f"{where} '{fn.__name__}' must accept exactly one argument (payload).")
+
+def _ensure_return_type(node: NodeDef, fn: Callable) -> None:
+    ra = inspect.signature(fn).return_annotation
+    if ra is inspect._empty:
+        raise RuntimeError(f"@{node.kind} '{fn.__name__}' must declare a return type (-> MyModel).")
+    if not (isinstance(ra, type) and issubclass(ra, BaseModel)):
+        raise RuntimeError(f"@{node.kind} '{fn.__name__}' must return a Pydantic BaseModel (found {ra}).")
+    node.returns = ra
+
+def _ensure_route_return_type(node: NodeDef, fn: Callable) -> None:
+    ra = inspect.signature(fn).return_annotation
+    if ra is inspect._empty:
+        raise RuntimeError(f"@route '{fn.__name__}' must declare return type Route[Literal[...]] or Route[Enum].")
+    origin = get_origin(ra)
+    if origin is not Route:
+        raise RuntimeError(f"@route '{fn.__name__}' must return Route[...], not {ra}.")
+    args = get_args(ra) or []
+    if args:
+        inner = args[0]
+        inner_origin = get_origin(inner)
+        if inner_origin is Literal:
+            allowed = set(map(str, get_args(inner)))
+            if node.cases and not set(node.cases).issubset(allowed):
+                missing = set(node.cases) - allowed
+                raise RuntimeError(f"@route '{fn.__name__}' cases {sorted(missing)} not listed in Route[Literal[...]].")
 
 __all__ = [
     "start", "step", "route", "end",
     "data", "set_data", "vars", "tool", "emit",
-    "FromPayload", "FromVar", "FromTool", "Context", "Payload", "Result",
-    "accept_llm", "llm",
-    "App", "AppConfig", "ToolSpec", "_reset_nodes_registry",
+    "Result", "Route", "llm",
+    "App", "AppConfig",
 ]
-
-
-def _ensure_return_type(node: NodeDef, fn: Callable) -> None:
-    ra = inspect.signature(fn).return_annotation
-    has_ra = (ra is not inspect._empty)
-    if node.kind == "route":
-        ok = has_ra and (get_origin(ra) in {TypingLiteral, Literal})
-        if not ok:
-            raise RuntimeError(f"@route '{fn.__name__}' must declare Literal[...] return type.")
-        return
-    inferred = node.returns or (ra if has_ra else None)
-    if inferred is None:
-        raise RuntimeError(f"@{node.kind} '{fn.__name__}' must declare a return type "
-                           f"(use -> MyModel or returns=MyModel).")
-    node.returns = inferred

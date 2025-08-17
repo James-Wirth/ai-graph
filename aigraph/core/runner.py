@@ -6,9 +6,8 @@ import uuid
 from typing import Any, Dict, Optional, List, Tuple
 from pydantic import BaseModel
 
-from aigraph.core.agents import Agent, LLMAgent
+from aigraph.core.agents import Agent
 from aigraph.core.tools import ToolRegistry, ToolResult
-from aigraph.core.injection import resolve_fn_args, resolve_tool_argmap
 
 class ExecutionContext:
     def __init__(self, run_id: Optional[str] = None):
@@ -72,54 +71,8 @@ class GraphRunner:
             tools_used: List[ToolResult] = []
             prompt_text: Optional[str] = None
 
-            if node_def:
-                specs = []
-                for t in (node_def.tools or []):
-                    if isinstance(t, dict):
-                        specs.append(t)
-                    elif isinstance(t, str):
-                        specs.append({"name": t})
-                ctx.variables.setdefault("tools", {})
-                for spec in specs:
-                    name = spec["name"]
-                    alias = spec.get("as") or spec.get("alias") or name
-
-                    def _get_path(root, path: str):
-                        cur = root
-                        for part in path.split("."):
-                            if part == "":
-                                continue
-                            cur = (cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None))
-                            if cur is None:
-                                break
-                        return cur
-
-                    payload_for_params = getattr(last_output, "payload", last_output)
-                    tool_ns = ctx.variables.get("tools") or {}
-                    param_ns = resolve_fn_args(
-                        getattr(node_def, "param_specs", []) or [],
-                        payload_for_params,
-                        ctx.variables,
-                        tool_ns,
-                    )
-                    inputs = resolve_tool_argmap(
-                        spec.get("argmap", {}),
-                        last_output=last_output,
-                        ctx_vars=ctx.variables,
-                        param_ns=param_ns,
-                    )
-                    tr = self.tool_registry.get(name).call(inputs)
-                    ctx.variables["tools"][alias] = tr.model_dump()
-                    tools_used.append(tr)
-                    if spec.get("required") and not tr.success:
-                        raise RuntimeError(f"Required pre-tool '{name}' failed: {tr.error}")
-
-            if isinstance(agent, LLMAgent):
-                prompt_text = agent.build_prompt(last_output, ctx.variables)
-                messages = agent.build_messages(last_output, ctx.variables)
-                output = agent._llm_round(messages)
-            else:
-                output = agent.process(last_output, ctx.variables)
+            ctx.variables.setdefault("tools", {})
+            output = agent.process(last_output, ctx.variables)
 
             neighbors = list(self.graph.neighbors(current_node))
             next_node, rationale, confidence = agent.route(neighbors, ctx.variables, output)
@@ -141,12 +94,11 @@ class GraphRunner:
             if next_node not in neighbors:
                 raise AssertionError(f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}")
 
-            current_node = next_node
-
-            is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
+            is_router = (node_def.kind == "route") if node_def else False
             if not is_router:
                 last_output = output
 
+            current_node = next_node
             step += 1
 
         return last_output, ctx
