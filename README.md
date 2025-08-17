@@ -7,7 +7,12 @@ It combines the ergonomics of writing plain Python functions with the robustness
 
 ## Example: Physics lesson with Newton and Einstein 
 
-Here's an example of a simple graph-based workflow, which routes your Physics question to Newton or Einstein depending on the content. We'll show how to hook up some simple external tools.
+Here's an example of a simple graph-based workflow, which routes your Physics question to Newton or Einstein depending on the content. We'll also show how to hook up some simple external tools.
+
+<p align="center" style="margin: 30px 0;">
+  <img src="https://github.com/user-attachments/assets/5ab111c8-771c-4c59-a7a2-70ce32a0bd94" alt="physics_workflow" width="500" />
+</p>
+
 
 ### 1. Create the app
 
