@@ -172,6 +172,14 @@ run_spec = {
 out, ctx = app.run(run_spec)
 ```
 
+The output from the graph above:
+```
+"final": {
+    "answer": 15.0,
+    "explanation": "F = ma, where F is the net force, m is mass (5 kg), and a is acceleration (3 m/s^2). Plugging in the values, we get F = 5 kg * 3 m/s^2 = 15 N."
+}
+```
+
 ## Highlights
 
 ### Declarative Graph Construction
