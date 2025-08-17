@@ -57,9 +57,12 @@ def render_workflow_graph(
         is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
         is_terminal = G.out_degree(n) == 0
 
-        if isinstance(agent, LLMAgent) and (getattr(agent, "allowed_tools", None) or (data.get("node_def") and data["node_def"].tools)):
+        node_def = data.get("node_def")
+        has_declared_tools = bool(getattr(node_def, "tools", None))
+        has_agent_tools = bool(isinstance(agent, LLMAgent) and getattr(agent, "allowed_tools", None))
+        if has_declared_tools or has_agent_tools:
             tool_capable.add(n)
-
+        
         if is_terminal:
             terminals.append(n)
         elif is_router:
