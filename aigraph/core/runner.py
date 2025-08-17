@@ -124,11 +124,6 @@ class GraphRunner:
                         tool_ns,
                     )
                     inputs = _resolve(spec.get("argmap", {}), last_output, ctx.variables, param_ns)
-
-                    if isinstance(agent, LLMAgent) and agent.allowed_tools and name not in agent.allowed_tools:
-                        raise PermissionError(
-                            f"[{agent.name}] Pre-tool '{name}' not allowed. Allowed: {sorted(agent.allowed_tools)}"
-                        )
                     tr = self.tool_registry.get(name).call(inputs)
                     ctx.variables["tools"][alias] = tr.model_dump()
                     tools_used.append(tr)
