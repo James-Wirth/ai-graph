@@ -35,6 +35,18 @@ class ExecutionContext:
             'tools_used': [t.model_dump() for t in (tools_used or [])],
         })
 
+def _build_param_ns(node_def, last_output):
+    payload = getattr(last_output, "payload", last_output)
+    ns = {}
+    for name, _ann in getattr(node_def, "param_specs", []) or []:
+        try:
+            val = payload.get(name) if isinstance(payload, dict) else getattr(payload, name, None)
+        except Exception:
+            val = None
+        ns[name] = val
+    return ns
+
+
 class GraphRunner:
     def __init__(
         self,
@@ -93,7 +105,7 @@ class GraphRunner:
                                 break
                         return cur
 
-                    def _resolve(argmap, last_output, vars):
+                    def _resolve(argmap, last_output, vars, param_ns):
                         payload = getattr(last_output, "payload", last_output)
                         out = {}
                         for k, v in (argmap or {}).items():
@@ -106,13 +118,17 @@ class GraphRunner:
                                     out[k] = vars
                                 elif v.startswith("$context."):
                                     out[k] = _get_path(vars, v[len("$context."):])
+                                elif v.startswith("$param."):
+                                    out[k] = _get_path(param_ns, v[len("$param."):])
                                 else:
                                     out[k] = v
                             else:
                                 out[k] = v
                         return out
 
-                    inputs = _resolve(spec.get("argmap", {}), last_output, ctx.variables)
+                    param_ns = _build_param_ns(node_def, last_output)
+                    inputs = _resolve(spec.get("argmap", {}), last_output, ctx.variables, param_ns)
+
                     if isinstance(agent, LLMAgent) and agent.allowed_tools and name not in agent.allowed_tools:
                         raise PermissionError(
                             f"[{agent.name}] Pre-tool '{name}' not allowed. Allowed: {sorted(agent.allowed_tools)}"
