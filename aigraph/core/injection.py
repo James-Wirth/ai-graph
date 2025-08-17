@@ -22,6 +22,38 @@ class FromTool(Inject):
 
 class Context(Inject): ...
 class Payload(Inject): ...
+ 
+def resolve_tool_argmap(argmap: Dict[str, Any], *, last_output: Any, ctx_vars: Dict[str, Any], param_ns: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_path(root, path: str):
+        cur = root
+        for part in (path or "").split("."):
+            if part == "":
+                continue
+            cur = (cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None))
+            if cur is None:
+                break
+        return cur
+
+    payload = getattr(last_output, "payload", last_output)
+    out = {}
+    for k, v in (argmap or {}).items():
+        if isinstance(v, str) and v.startswith("$"):
+            if v == "$input":
+                out[k] = payload
+            elif v.startswith("$input."):
+                out[k] = _get_path(payload, v[len("$input."):])
+            elif v == "$context":
+                out[k] = ctx_vars
+            elif v.startswith("$context."):
+                out[k] = _get_path(ctx_vars, v[len("$context."):])
+            elif v.startswith("$param."):
+                out[k] = _get_path(param_ns, v[len("$param."):])
+            else:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
 
 def get_path(root: Any, path: str) -> Any:
     cur = root

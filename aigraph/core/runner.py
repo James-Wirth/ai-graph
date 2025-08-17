@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from aigraph.core.agents import Agent, LLMAgent
 from aigraph.core.tools import ToolRegistry, ToolResult
-from aigraph.core.injection import resolve_fn_args
+from aigraph.core.injection import resolve_fn_args, resolve_tool_argmap
 
 class ExecutionContext:
     def __init__(self, run_id: Optional[str] = None):
@@ -94,27 +94,6 @@ class GraphRunner:
                                 break
                         return cur
 
-                    def _resolve(argmap, last_output, vars, param_ns):
-                        payload = getattr(last_output, "payload", last_output)
-                        out = {}
-                        for k, v in (argmap or {}).items():
-                            if isinstance(v, str) and v.startswith("$"):
-                                if v == "$input":
-                                    out[k] = payload
-                                elif v.startswith("$input."):
-                                    out[k] = _get_path(payload, v[len("$input."):])
-                                elif v == "$context":
-                                    out[k] = vars
-                                elif v.startswith("$context."):
-                                    out[k] = _get_path(vars, v[len("$context."):])
-                                elif v.startswith("$param."):
-                                    out[k] = _get_path(param_ns, v[len("$param."):])
-                                else:
-                                    out[k] = v
-                            else:
-                                out[k] = v
-                        return out
-
                     payload_for_params = getattr(last_output, "payload", last_output)
                     tool_ns = ctx.variables.get("tools") or {}
                     param_ns = resolve_fn_args(
@@ -123,7 +102,12 @@ class GraphRunner:
                         ctx.variables,
                         tool_ns,
                     )
-                    inputs = _resolve(spec.get("argmap", {}), last_output, ctx.variables, param_ns)
+                    inputs = resolve_tool_argmap(
+                        spec.get("argmap", {}),
+                        last_output=last_output,
+                        ctx_vars=ctx.variables,
+                        param_ns=param_ns,
+                    )
                     tr = self.tool_registry.get(name).call(inputs)
                     ctx.variables["tools"][alias] = tr.model_dump()
                     tools_used.append(tr)
