@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from aigraph.core.agents import Agent, LLMAgent
 from aigraph.core.tools import ToolRegistry, ToolResult
+from aigraph.core.injection import resolve_fn_args
 
 class ExecutionContext:
     def __init__(self, run_id: Optional[str] = None):
@@ -34,18 +35,6 @@ class ExecutionContext:
             'decision': decision,
             'tools_used': [t.model_dump() for t in (tools_used or [])],
         })
-
-def _build_param_ns(node_def, last_output):
-    payload = getattr(last_output, "payload", last_output)
-    ns = {}
-    for name, _ann in getattr(node_def, "param_specs", []) or []:
-        try:
-            val = payload.get(name) if isinstance(payload, dict) else getattr(payload, name, None)
-        except Exception:
-            val = None
-        ns[name] = val
-    return ns
-
 
 class GraphRunner:
     def __init__(
@@ -126,7 +115,14 @@ class GraphRunner:
                                 out[k] = v
                         return out
 
-                    param_ns = _build_param_ns(node_def, last_output)
+                    payload_for_params = getattr(last_output, "payload", last_output)
+                    tool_ns = ctx.variables.get("tools") or {}
+                    param_ns = resolve_fn_args(
+                        getattr(node_def, "param_specs", []) or [],
+                        payload_for_params,
+                        ctx.variables,
+                        tool_ns,
+                    )
                     inputs = _resolve(spec.get("argmap", {}), last_output, ctx.variables, param_ns)
 
                     if isinstance(agent, LLMAgent) and agent.allowed_tools and name not in agent.allowed_tools:

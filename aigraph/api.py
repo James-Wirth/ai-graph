@@ -13,8 +13,8 @@ import inspect
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union, Literal, Annotated, get_origin, get_args
-from typing import Literal as TypingLiteral, Optional as TypingOptional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union, Literal, get_origin, get_args
+from typing import Literal as TypingLiteral, Optional as TypingOptional
 
 from pydantic import BaseModel, create_model
 
@@ -24,6 +24,9 @@ from aigraph.core.runner import GraphRunner
 from aigraph.core.tools import ToolRegistry, ToolResult
 from aigraph.core.viz import mermaid_from_graph, render_workflow_graph
 from aigraph.interfaces.ollama import OllamaInterface
+
+from aigraph.core.injection import From, FromVar, ToolValue, Context, Payload, resolve_fn_args
+
 
 
 class _RunScope:
@@ -61,89 +64,14 @@ def emit(artifact: Dict[str, Any]) -> None:
     _scope().artifacts.append(artifact)
 
 
-################################
-# For function design
-################################
-
-class _Inject: ...
-
-@dataclass(frozen=True)
-class From(_Inject):
-    path: str  
-
-@dataclass(frozen=True)
-class FromVar(_Inject):
-    path: str  
-
-@dataclass(frozen=True)
-class ToolValue(_Inject):
-    name: str        
-    field: str = "output"  
-
-class Context(_Inject): ...
-class Payload(_Inject): ...
-
 @dataclass
 class Result:
     payload: Any
     artifacts: list[dict[str, Any]] | None = None
 
-def _get_path(root: Any, path: str) -> Any:
-    cur = root
-    for part in (path or "").split("."):
-        if part == "":
-            continue
-        cur = (cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None))
-        if cur is None:
-            break
-    return cur
-
-def _is_annotated_with(t, marker_type) -> tuple[bool, Any]:
-    if get_origin(t) is Annotated:
-        base, *extras = get_args(t)
-        for e in extras:
-            if isinstance(e, marker_type):
-                return True, (base, e)
-        return True, (base, None)
-    return False, (t, None)
-
-def _coerce(value, typ):
-    try:
-        if value is None:
-            return None
-        if isinstance(typ, type) and issubclass(typ, BaseModel):
-            return typ.model_validate(value)
-        return value
-    except Exception:
-        return value  
-    
 
 def _capture_sig(fn: Callable) -> List[Tuple[str, Any]]:
     return [(p.name, p.annotation) for p in inspect.signature(fn).parameters.values()]
-
-def _resolve_fn_args(node: NodeDef, payload: Any, ctx_vars: Dict[str, Any], tool_ns: Dict[str, Any]) -> Dict[str, Any]:
-    out = {}
-    for name, ann in node.param_specs:
-        is_anno, (base, injected) = _is_annotated_with(ann, _Inject)
-        if injected is None and is_anno:
-            injected = None
-        if isinstance(injected, From):
-            out[name] = _coerce(_get_path(payload, injected.path), base)
-            continue
-        if isinstance(injected, FromVar):
-            out[name] = _coerce(_get_path(ctx_vars, injected.path), base)
-            continue
-        if isinstance(injected, ToolValue):
-            t = tool_ns.get(injected.name) or {}
-            out[name] = t if injected.field == "all" else (t.get(injected.field) if isinstance(t, dict) else None)
-            continue
-        if ann is Context:
-            out[name] = ctx_vars; continue
-        if ann is Payload:
-            out[name] = payload; continue
-        out[name] = _coerce(_get_path(payload, name), ann)
-    return out
-
 
 
 ################################
@@ -258,7 +186,7 @@ class _RouteDecorator:
         fn: Optional[Callable] = None,
         *,
         prompt: str,
-        cases: Mapping[str, Union[str, Callable]],
+        cases: Optional[Mapping[str, Union[str, Callable]]] = None,
         tools: Optional[List[Union[str, Dict[str, Any], ToolSpec]]] = None,
         route_selector: Optional[Callable[[Any, Dict[str, Any]], Optional[str]]] = None,
         schema_hint: Literal["json", "fields", "schema", "none"] = "json",
@@ -281,10 +209,20 @@ class _RouteDecorator:
             lit_opts = None
             if get_origin(ra) in {TypingLiteral, Literal}:
                 lit_opts = tuple(map(str, get_args(ra)))
-            cdict = {k: _func_name(v) for k, v in dict(cases).items()}
-            if lit_opts and cdict and set(cdict.keys()) != set(lit_opts):
-                raise RuntimeError(f"@route '{f.__name__}' cases {sorted(cdict)} "
-                                   f"must match return Literal {sorted(lit_opts)}")
+            
+            if cases is None:
+                if not lit_opts:
+                    raise RuntimeError(
+                        f"@route '{f.__name__}': provide either cases=... or a Literal[...] return type."
+                    )
+                cdict = {opt: opt for opt in lit_opts}
+            else:
+                cdict = {k: _func_name(v) for k, v in dict(cases).items()}
+                if lit_opts and set(cdict.keys()) != set(lit_opts):
+                    raise RuntimeError(
+                        f"@route '{f.__name__}' cases {sorted(cdict)} must match return Literal {sorted(lit_opts)}"
+                    )
+
             _NODE_REGISTRY[f.__name__] = NodeDef(
                 func=f,
                 kind="route",
@@ -367,7 +305,7 @@ class App:
 
                 payload = _scope().payload
                 tool_ns = context.get("tools") or {}
-                args = _resolve_fn_args(self.node, payload, context, tool_ns)
+                args = resolve_fn_args(self.node.param_specs, payload, context, tool_ns)
 
                 rv = self.node.func(**args)
 
@@ -398,8 +336,10 @@ class App:
 
         def _mk_llm_agent(node: NodeDef) -> LLMAgent:
             if node.kind == "route":
-                choices = tuple(node.cases.keys()) or tuple(["_"])
-                ChoiceLit = TypingLiteral[choices] if choices != ("_",) else str
+                choices = tuple(node.cases.keys())
+                if not choices:
+                    raise RuntimeError(f"@route '{node.name}' has no cases; provide cases=... or a Literal[...] return type.")
+                ChoiceLit = TypingLiteral[choices]
                 RouteOut = create_model("RouteOutput", choice=(ChoiceLit, ...))  
                 response_model = RouteOut
                 edges = dict(node.cases)
@@ -423,7 +363,7 @@ class App:
             def _prompt_builder(input_model: BaseModel, context: Dict[str, Any]) -> str:
                 payload = getattr(input_model, "payload", input_model)
                 tool_ns = (context.get("tools") or {})
-                args_ns = _resolve_fn_args(node, payload, context, tool_ns)
+                args_ns = resolve_fn_args(node.param_specs, payload, context, tool_ns)
 
                 base_env = {
                     "input": payload,
@@ -432,6 +372,7 @@ class App:
                     "param": args_ns,
                     **args_ns,  
                 }
+
                 from string import Template
                 import json, re
 
