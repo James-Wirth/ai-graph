@@ -44,10 +44,7 @@ class LLMAgent(Agent):
         edges: Optional[Dict[str, Any]] = None,        
         route_field: Optional[str] = None,
         route_selector: Optional[Callable[[BaseModel, Dict[str, Any]], Optional[str]]] = None,
-
         prompt_builder: Optional[Callable[[BaseModel, Dict[str, Any]], str]] = None,
-
-        allowed_tools: Optional[List[str]] = None,
         schema_hint: str = "json"
     ):
         super().__init__(name=name)
@@ -67,8 +64,6 @@ class LLMAgent(Agent):
 
         self.route_field = route_field
         self.route_selector = route_selector
-
-        self.allowed_tools: Set[str] = set(allowed_tools or [])
         self.schema_hint = (schema_hint or "json").lower()
 
         if self.route_field and hasattr(self.response_model_cls, "model_fields"):
