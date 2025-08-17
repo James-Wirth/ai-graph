@@ -70,8 +70,13 @@ class Result:
     artifacts: list[dict[str, Any]] | None = None
 
 
-def _capture_sig(fn: Callable) -> List[Tuple[str, Any]]:
-    return [(p.name, p.annotation) for p in inspect.signature(fn).parameters.values()]
+def _capture_sig(fn):
+    specs = []
+    sig = inspect.signature(fn)
+    for p in sig.parameters.values():
+        default = p.default if p.default is not inspect._empty else None
+        specs.append((p.name, p.annotation, default))
+    return specs
 
 
 ################################
@@ -113,7 +118,9 @@ class AppConfig(BaseModel):
 _NODE_REGISTRY: Dict[str, NodeDef] = {}
 
 
-def _func_name(f: Union[str, Callable]) -> str:
+def _func_name(f: Union[str, Callable, None]) -> Optional[str]:
+    if f is None:
+        return None
     return f if isinstance(f, str) else f.__name__
 
 ################################
@@ -126,14 +133,17 @@ def _func_name(f: Union[str, Callable]) -> str:
 ################################
 
 class _StartDecorator:
-    def __call__(self, fn: Callable) -> Callable:
-        _NODE_REGISTRY[fn.__name__] = NodeDef(
-            func=fn,
-            kind="start",
-            name=fn.__name__,
-            param_specs=_capture_sig(fn),   
-        )
-        return fn
+    def __call__(self, fn: Optional[Callable] = None, *, next: Union[str, Callable, None] = None):
+        def wrap(f: Callable) -> Callable:
+            _NODE_REGISTRY[f.__name__] = NodeDef(
+                func=f,
+                kind="start",
+                name=f.__name__,
+                param_specs=_capture_sig(f),
+                next_default=_func_name(next),   
+            )
+            return f
+        return wrap if fn is None else wrap(fn)
 
 class _StepDecorator:
     def __call__(
@@ -142,7 +152,7 @@ class _StepDecorator:
         *,
         prompt: Optional[str] = None,
         tools: Optional[List[Union[str, Dict[str, Any], ToolSpec]]] = None,
-        next: Optional[Callable] = None,
+        next: Optional[Union[str, Callable]] = None,
         schema_hint: Literal["json", "fields", "schema", "none"] = "json",
         returns: Optional[type[BaseModel]] = None,
         returns_required: bool = True,
@@ -431,6 +441,15 @@ class App:
                 if node.next_default not in agents:
                     raise RuntimeError(f"@step(next=...) references unknown node '{node.next_default}'.")
                 G.add_edge(node.name, node.next_default)
+
+        for name, agent in agents.items():
+            if isinstance(agent, LLMAgent) and getattr(agent, "edges", None):
+                for _, target in agent.edges.items():
+                    if target not in agents:
+                        raise RuntimeError(
+                            f"Route from '{name}' points to unknown node '{target}'. "
+                            "Use a function name string that matches an @ag.step/@ag.end."
+                        )
 
         for name, node in _NODE_REGISTRY.items():
             if name in G.nodes:
