@@ -30,7 +30,6 @@ app = ag.App(
 
 ### 2. Make a "start" node 
 
-You can do whatever pre-processing you want in the entry point. 
 In this minimal example, we'll simply return the payload (auto-validated by the compiler).
 
 ```python
@@ -40,7 +39,7 @@ class Input(BaseModel):
 
 @ag.start(next="route")
 def start(payload: Input) -> Input:
-    # For now, we'll just pass the payload to the route node
+    # You could do some pre-processing here if you felt like it...
     return payload
 ```
 
@@ -73,8 +72,8 @@ The routing agent returns either `"newton"` or `"einstein"` depending on the que
 
 ### 4.1 Implementing the answers with "step" nodes for Newton and Einstein.
 
-We'll define a Pydantic model `Answer` which the LLM output will be constrained to.
-The `newton` and `einstein` nodes are simple `@ag.step` nodes.
+We'll define a Pydantic model `Answer` to which the LLM output will be constrained.
+The `newton` and `einstein` nodes are both simple `@ag.step` nodes connected to the previous route node.
 
 ```python
 class Answer(BaseModel):
@@ -111,7 +110,8 @@ def einstein(payload: Input) -> Answer:
 
 ### 4.2 Adding tooling
 
-You can augment nodes with custom tools. The results of the tools can be injected into the prompts. For example, we could define a (contrived) tool that calculates force from mass and acceleration:
+You can augment nodes with custom tools. The results of the tools can be injected into the prompts. 
+For example, we could define a (contrived) tool that calculates force from mass and acceleration:
 
 ```python
 @ag.tool
@@ -122,7 +122,7 @@ def compute_force(mass: float, acceleration: float) -> Optional[float]:
         return None
 ```
 
-We can then hook this up inside the Newton node, and let the LLM use the tool output to proceed.
+We can hook this up inside the Newton node, and let the LLM use the tool output to proceed.
 (This assumes that the Newton-bot might struggle with the multiplication...)
 
 ```python
@@ -160,7 +160,8 @@ def newton(payload: Input) -> Answer:
 ```python
 @ag.end
 def end(payload: Answer) -> Answer:
-    # Again, we'll just return the raw payload (you could do some final processing if you want).
+    # Again, we'll just return the raw payload for now.
+    # You could do some final processing here.
     return payload
 ```
 ### 6. Running the graph
