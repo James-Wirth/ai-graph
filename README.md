@@ -50,14 +50,14 @@ We've specified the next node (`routing_node`) in the decorator. The compiler wi
 ```python
 @ag.route(
     prompt="""
-Classify the question and pick the best tutor:
+    Classify the question and pick the best tutor:
 
-- "newton_node" for classical mechanics.
-- "einstein_node" for relativity.
+    - "newton_node" for classical mechanics.
+    - "einstein_node" for relativity.
 
-Question:
-${question}
-""",
+    Question:
+    ${question}
+    """,
 )
 def routing_node(
     question: str = ag.From("question"),
@@ -82,9 +82,9 @@ class Answer(BaseModel):
 @ag.step(
     next="end_node",
     prompt="""
-You are Isaac Newton. Answer this question:
-Question: ${question}
-""",
+    You are Isaac Newton. Answer this question:
+    Question: ${question}
+    """,
 )
 def newton_node(
     question: str = From("question"),
@@ -96,9 +96,9 @@ def newton_node(
 @ag.step(
     next="end_node",
     prompt="""
-You are Albert Einstein. Answer this question:
-Question: ${question}
-""",
+    You are Albert Einstein. Answer this question:
+    Question: ${question}
+    """,
 )
 def einstein_node(
     question: str = From("question"),
@@ -123,11 +123,11 @@ def compute_force(mass: float, acceleration: float) -> Optional[float]:
 @ag.step(
     next="end_node",
     prompt="""
-You are Isaac Newton. Answer this question:
+    You are Isaac Newton. Answer this question:
 
-Question: ${param.question}
-Force (tool result): ${tool.force} 
-""",
+    Question: ${param.question}
+    Force (tool result): ${tool.force} 
+    """,
     tools=[{
         "name": "compute_force",
         "alias": "force_tool",
