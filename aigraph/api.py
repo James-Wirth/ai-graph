@@ -25,7 +25,7 @@ from aigraph.core.tools import ToolRegistry, ToolResult
 from aigraph.core.viz import mermaid_from_graph, render_workflow_graph
 from aigraph.interfaces.ollama import OllamaInterface
 
-from aigraph.core.injection import From, FromVar, ToolValue, Context, Payload, resolve_fn_args
+from aigraph.core.injection import FromPayload, FromVar, FromTool, Context, Payload, resolve_fn_args
 
 
 
@@ -576,7 +576,7 @@ def _reset_nodes_registry() -> None:
 __all__ = [
     "start", "step", "route", "end",
     "data", "set_data", "vars", "tool", "emit",
-    "From", "FromVar", "ToolValue", "Context", "Payload", "Result",
+    "FromPayload", "FromVar", "FromTool", "Context", "Payload", "Result",
     "accept_llm", "llm",
     "App", "AppConfig", "ToolSpec", "_reset_nodes_registry",
 ]

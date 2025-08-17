@@ -8,7 +8,7 @@ class Inject:
     __aigraph_inject__ = True
 
 @dataclass(frozen=True)
-class From(Inject):
+class FromPayload(Inject):
     path: str  
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class FromVar(Inject):
     path: str  
 
 @dataclass(frozen=True)
-class ToolValue(Inject):
+class FromTool(Inject):
     name: str        
     field: str = "output"  
 
@@ -93,13 +93,13 @@ def resolve_fn_args(param_specs, payload, ctx_vars, tool_ns) -> Dict[str, Any]:
                 out[name] = payload
                 continue
 
-        if isinstance(injected, From):
+        if isinstance(injected, FromPayload):
             out[name] = coerce(get_path(payload, injected.path), base)
             continue
         if isinstance(injected, FromVar):
             out[name] = coerce(get_path(ctx_vars, injected.path), base)
             continue
-        if isinstance(injected, ToolValue):
+        if isinstance(injected, FromTool):
             t = tool_ns.get(injected.name) or {}
             out[name] = t if injected.field == "all" else (t.get(injected.field) if isinstance(t, dict) else None)
             continue
