@@ -376,8 +376,11 @@ class App:
                 if self.node.returns and isinstance(self.node.returns, type) and issubclass(self.node.returns, BaseModel):
                     try:
                         payload_out = self.node.returns.model_validate(payload_out).model_dump()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        raise TypeError(
+                            f"Node '{self.node.name}' returned invalid payload for "
+                            f"{self.node.returns.__name__}: {e}"
+                        ) from e
 
                 return _PayloadModel(payload=payload_out, artifacts=all_artifacts or None)
 
@@ -413,6 +416,7 @@ class App:
                     "payload": payload,
                     "context": context,
                     "param": args_ns,
+                    "tool": tool_ns,
                     **args_ns,  
                 }
 
