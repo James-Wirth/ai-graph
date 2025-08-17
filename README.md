@@ -28,23 +28,16 @@ app = ag.App(
 
 ### 2. Make a "start" node 
 
+You can do whatever pre-processing you want in the entry point. In this example, we'll simply validate that the user input conforms to the BundledInput schema and pass it on to the next node.
+
 ```python
-class BundledInput(BaseModel):
+class ValidInput(BaseModel):
     question: str
     data: Optional[Dict[str, float]] = None
 
 @ag.start(next="routing_node")
-def start_node(
-    question: str = ag.From("question"),
-    data: Optional[Dict[str, float]] = ag.From("data"),
-) -> BundledInput:
-    """
-    - Python code in the function body executes when the node is reached.
-    - The return from each function is passed to the next node.
-
-    - In this example, we'll just bundle the initial arguments into a nice Pydantic schema.
-    """
-    return BundledInput(question=question, data=data)
+def start_node(payload: ValidInput = ag.Payload) -> ValidInput:
+    return payload
 ```
 
 We've specified the next node (`routing_node`) in the decorator. The compiler will automatically create the edge when the graph is run.
@@ -64,8 +57,8 @@ We've specified the next node (`routing_node`) in the decorator. The compiler wi
     """,
 )
 def routing_node(
-    question: str = ag.From("question"),
-    data: Optional[Dict[str, float]] = ag.From("data"),
+    question: str                    = ag.FromPayload("question"),  # access payload entries directly 
+    data: Optional[Dict[str, float]] = ag.FromPayload("data"),      # (e.g. for prompt injection)
 ) -> Literal["newton_node", "einstein_node"]:
     """
     - return ag.accept_llm() simply passes on the structured LLM
@@ -88,12 +81,12 @@ class Answer(BaseModel):
     next="end_node",
     prompt="""
     You are Isaac Newton. Answer this question:
-    Question: ${question}
+    Question: ${param.question}
     """,
 )
 def newton_node(
-    question: str = ag.From("question"),
-    data: Optional[Dict[str, float]] = ag.From("data"),
+    question: str                    = ag.FromPayload("question"),
+    data: Optional[Dict[str, float]] = ag.FromPayload("data"),
 ) -> Answer:
     return ag.accept_llm()
 
@@ -102,12 +95,12 @@ def newton_node(
     next="end_node",
     prompt="""
     You are Albert Einstein. Answer this question:
-    Question: ${question}
+    Question: ${param.question}
     """,
 )
 def einstein_node(
-    question: str = ag.From("question"),
-    data: Optional[Dict[str, float]] = ag.From("data"),
+    question: str                    = ag.FromPayload("question"),
+    data: Optional[Dict[str, float]] = ag.FromPayload("data"),
 ) -> Answer:
     return ag.accept_llm()
 ```
@@ -135,7 +128,7 @@ def compute_force(mass: float, acceleration: float) -> Optional[float]:
     """,
     tools=[{
         "name": "compute_force",
-        "alias": "force_tool",
+        "alias": "force",
         "required": True,
         "argmap": {
             "mass": "$param.data.m",
@@ -144,9 +137,9 @@ def compute_force(mass: float, acceleration: float) -> Optional[float]:
     }],
 )
 def newton_node(
-    question: str = ag.From("question"),
-    data: Optional[Dict[str, float]] = ag.From("data"),
-    force: Optional[float] = ag.ToolValue("force_tool", field="output"),
+    question: str                    = ag.FromPayload("question"),
+    data: Optional[Dict[str, float]] = ag.FromPayload("data"),
+    force: Optional[float]           = ag.FromTool("force", field="output"),  # access tool outputs
 ) -> Answer:
     return ag.accept_llm()
 ```
