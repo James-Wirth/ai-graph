@@ -7,7 +7,7 @@ import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from aigraph.core.agents import Agent, LLMAgent
+from aigraph.core.agents import Agent
 
 
 def _compute_layout(G: nx.DiGraph) -> Dict[Any, Tuple[float, float]]:
@@ -35,6 +35,19 @@ def _path_edges_from_history(history: List[Dict[str, Any]]) -> List[Tuple[Any, A
     return path_edges
 
 
+def _tool_nodes_from_history(history: Optional[List[Dict[str, Any]]]) -> set[Any]:
+    nodes: set[Any] = set()
+    if not history:
+        return nodes
+    for step in history:
+        node = step.get("node")
+        tools_used = step.get("tools_used") or []
+        artifacts = step.get("artifacts") or []
+        if node is not None and (len(tools_used) > 0 or len(artifacts) > 0):
+            nodes.add(node)
+    return nodes
+
+
 def render_workflow_graph(
     G: nx.DiGraph,
     *,
@@ -47,22 +60,18 @@ def render_workflow_graph(
     routers: List[Any] = []
     terminals: List[Any] = []
     normals: List[Any] = []
-    tool_capable: set[Any] = set()
+
+    tool_capable: set[Any] = _tool_nodes_from_history(history)
 
     for n, data in G.nodes(data=True):
         agent = data.get("agent")
         if not isinstance(agent, Agent):
             raise AssertionError(f"Node '{n}' missing a valid Agent (found: {type(agent)})")
 
-        is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
+        node_def = data.get("node_def")
+        is_router = (getattr(node_def, "kind", None) == "route")
         is_terminal = G.out_degree(n) == 0
 
-        node_def = data.get("node_def")
-        has_declared_tools = bool(getattr(node_def, "tools", None))
-        has_agent_tools = bool(isinstance(agent, LLMAgent) and getattr(agent, "allowed_tools", None))
-        if has_declared_tools or has_agent_tools:
-            tool_capable.add(n)
-        
         if is_terminal:
             terminals.append(n)
         elif is_router:
@@ -165,27 +174,29 @@ def mermaid_from_graph(
     start: Optional[Any] = None,
     history: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-
     lines: List[str] = ["flowchart LR"]
 
     for n, data in G.nodes(data=True):
-        agent = data.get("agent")
         label = str(n)
         shape_open, shape_close = ("([", "])")  
 
+        node_def = data.get("node_def")
         is_terminal = G.out_degree(n) == 0
-        is_router = isinstance(agent, LLMAgent) and bool(getattr(agent, "edges", {}))
+        is_router = (getattr(node_def, "kind", None) == "route")
+
         if is_terminal:
-            shape_open, shape_close = ("{{", "}}")  
+            shape_open, shape_close = ("{{", "}}") 
         elif is_router:
             shape_open, shape_close = ("[", "]")    
+
         if start is not None and n == start:
             label = f"{label} ✦"
-        lines.append(f'  {n}{shape_open}{label}{shape_close}')
+
+        lines.append(f"  {n}{shape_open}{label}{shape_close}")
 
     path_set = set(_path_edges_from_history(history) if history else [])
     for u, v in G.edges():
-        style = "-->" if (u, v) not in path_set else "===>"
+        style = "===>" if (u, v) in path_set else "-->"
         lines.append(f"  {u} {style} {v}")
 
     return "\n".join(lines)

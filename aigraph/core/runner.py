@@ -25,6 +25,16 @@ class ExecutionContext:
         decision: Dict[str, Any],
         tools_used: Optional[List[ToolResult]] = None,
     ):
+        artifacts = None
+        try:
+            if hasattr(result, "artifacts"):
+                artifacts = result.artifacts
+            elif isinstance(result, BaseModel):
+                md = result.model_dump()
+                artifacts = md.get("artifacts")
+        except Exception:
+            artifacts = None
+
         self.history.append({
             'timestamp': dt.datetime.now(dt.UTC).isoformat(),
             'node': node,
@@ -33,6 +43,7 @@ class ExecutionContext:
             'neighbours': neighbours,
             'decision': decision,
             'tools_used': [t.model_dump() for t in (tools_used or [])],
+            'artifacts': artifacts,
         })
 
 class GraphRunner:
