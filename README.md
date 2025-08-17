@@ -7,7 +7,7 @@ AIGraph lets you write nodes as plain Python functions, but wires them up into a
 
 ## Example: Physics lesson with Newton and Einstein 
 
-Here's an example of a simple graph-based workflow, which routes your Physics question to Newton or Einstein depending on the content. We'll also show how to hook up some simple external tools.
+Here's a (contrived) example of a simple graph-based workflow, which routes your Physics question to Newton or Einstein depending on the content. We'll also show how to hook up some simple external tools.
 
 <p align="center" style="margin: 30px 0;">
   <img src="https://github.com/user-attachments/assets/5ab111c8-771c-4c59-a7a2-70ce32a0bd94" alt="physics_workflow" width="500" />
@@ -28,7 +28,7 @@ app = ag.App(
 
 ### 2. Make a "start" node 
 
-You can do whatever pre-processing you want in the entry point. In this example, we'll simply validate that the user input conforms to the BundledInput schema and pass it on to the next node.
+You can do whatever pre-processing you want in the entry point. In this example, we'll simply validate that the user input conforms to the ValidInput schema and pass it on to the next node.
 
 ```python
 class ValidInput(BaseModel):
