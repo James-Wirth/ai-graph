@@ -1,9 +1,11 @@
 # AIGraph
 
 
-**AIGraph** is a lighweight, decorator-driven framework for building complex, graph-based agentic workflows. 
+**AIGraph** is a fairly lightweight, decorator-driven framework for building complex, graph-based agentic workflows. 
 
-AIGraph lets you write nodes as plain Python functions, but wires them up into a graph with typed inputs and outputs. Under the hood it uses Pydantic for validation, so every edge between nodes is schema-checked. You get the convenience of just writing functions, plus the safety of strong types, without having to deal with excessive boilerplate.
+The idea is to let you write nodes as decorated Python functions. The compiler automatically wires them up into a graph with typed inputs and outputs, using Pydantic for schema validation. You get the convenience of just writing decorated functions, plus the safety of strong types, without having to deal with excessive boilerplate.
+
+AIGraph supports a few key types of nodes: start nodes, end nodes, routing nodes (for decisions) and step nodes. 
 
 ## Example: Physics lesson with Newton and Einstein 
 
@@ -28,137 +30,138 @@ app = ag.App(
 
 ### 2. Make a "start" node 
 
-You can do whatever pre-processing you want in the entry point. In this example, we'll simply validate that the user input conforms to the ValidInput schema and pass it on to the next node.
+You can do whatever pre-processing you want in the entry point. 
+In this minimal example, we'll simply return the payload (auto-validated by the compiler).
 
 ```python
-class ValidInput(BaseModel):
+class Input(BaseModel):
     question: str
     data: Optional[Dict[str, float]] = None
 
-@ag.start(next="routing_node")
-def start_node(payload: ValidInput = ag.Payload) -> ValidInput:
+@ag.start(next="route")
+def start(payload: Input) -> Input:
+    # For now, we'll just pass the payload to the route node
     return payload
 ```
 
-We've specified the next node (`routing_node`) in the decorator. The compiler will automatically create the edge when the graph is run.
+We've specified the next node (`route`) in the decorator. The compiler will automatically create the edge when the graph is run. 
 
 ### 3. Choosing the best tutor with a "route" node
 
+Route nodes allow the LLM to make a choice on how to proceed through the graph. 
+You can also manually override this in the function body (for debugging, simple cases, etc.)
+
 ```python
-@ag.route(
-    prompt="""
-    Classify the question and pick the best tutor:
+@ag.route(cases=["newton", "einstein"]) 
+def route(payload: Input) -> ag.Route[Literal["newton", "einstein"]]:
 
-    - "newton_node" for classical mechanics.
-    - "einstein_node" for relativity.
+    # We'll let the LLM decide the route...
+    # depending on the question subject (accessed via payload.question)
+    return ag.Route.delegate(
+        prompt=f"""
+        Classify the question:
+        - "newton" for classical mechanics
+        - "einstein" for relativity
 
-    Question:
-    ${param.question}
-    """,
-)
-def routing_node(
-    question: str                    = ag.FromPayload("question"),  # access payload entries directly 
-    data: Optional[Dict[str, float]] = ag.FromPayload("data"),      # (e.g. for prompt injection)
-) -> Literal["newton_node", "einstein_node"]:
-    """
-    - return ag.accept_llm() simply passes on the structured LLM
-      output to the next node, without any manual processing.
-    """
-    return ag.accept_llm()
+        Question: {payload.question}
+        """
+    )
 ```
 
-We've injected the question argument into the prompt with `${param.question}`. 
-The routing agent returns either `"netwon_node"` or `"einstein_node"` depending on the question, and proceeds to that node. 
+We've injected the question argument into the prompt with `{payload.question}`. 
+The routing agent returns either `"newton"` or `"einstein"` depending on the question, and proceeds to that node. 
 
 ### 4.1 Implementing the answers with "step" nodes for Newton and Einstein.
+
+We'll define a Pydantic model `Answer` which the LLM output will be constrained to.
+The `newton` and `einstein` nodes are simple `@ag.step` nodes.
 
 ```python
 class Answer(BaseModel):
     answer: float
     explanation: str = Field(min_length=40, max_length=800)
 
-@ag.step(
-    next="end_node",
-    prompt="""
-    You are Isaac Newton. Answer this question:
+@ag.step(next="end")
+def newton(payload: Input) -> Answer:
+    # Return the structured output (w/ schema "Answer") from the LLM
+    return ag.llm(
+        model=Answer,
+        prompt=f"""
+        You are Isaac Newton. 
+        Answer this Physics question in your personal style:
 
-    Question: ${param.question}
-    Data: ${param.data}
-    """,
-)
-def newton_node(
-    question: str                    = ag.FromPayload("question"),
-    data: Optional[Dict[str, float]] = ag.FromPayload("data"),
-) -> Answer:
-    return ag.accept_llm()
+        Question: {payload.question}
+        Data: {payload.data}
+        """
+    )
 
+@ag.step(next="end")
+def einstein(payload: Input) -> Answer:
+    return ag.llm(
+        model=Answer,
+        prompt=f"""
+        You are Albert Einstein. 
+        Answer this Physics question in your personal style:
 
-@ag.step(
-    next="end_node",
-    prompt="""
-    You are Albert Einstein. Answer this question:
-    
-    Question: ${param.question}
-    Data: ${param.data}
-    """,
-)
-def einstein_node(
-    question: str                    = ag.FromPayload("question"),
-    data: Optional[Dict[str, float]] = ag.FromPayload("data"),
-) -> Answer:
-    return ag.accept_llm()
+        Question: {payload.question}
+        Data: {payload.data}
+        """
+    )
 ```
-
-These steps implement the Newton and Einstein agents, which read the question in the payload and return a structured `Answer` output that is sent to the `finish_node`.
 
 ### 4.2 Adding tooling
 
-You can augment nodes with custom tools. The results of the tools can be injected into the prompts. For example, we could give the Newton agent a tool that calculates force:
+You can augment nodes with custom tools. The results of the tools can be injected into the prompts. For example, we could define a (contrived) tool that calculates force from mass and acceleration:
 
 ```python
+@ag.tool
 def compute_force(mass: float, acceleration: float) -> Optional[float]:
     try:
         return float(mass) * float(acceleration)
     except Exception:
         return None
-
-@ag.step(
-    next="end_node",
-    prompt="""
-    You are Isaac Newton. Answer this question:
-
-    Question: ${param.question}
-    Force (tool result): ${tool.force} 
-    """,
-    tools=[{
-        "name": "compute_force",
-        "alias": "force",
-        "required": True,
-        "argmap": {
-            "mass": "$param.data.m",
-            "acceleration": "$param.data.a",
-        },
-    }],
-)
-def newton_node(
-    question: str                    = ag.FromPayload("question"),
-    data: Optional[Dict[str, float]] = ag.FromPayload("data"),
-    force: Optional[float]           = ag.FromTool("force", field="output"),  # access tool outputs
-) -> Answer:
-    return ag.accept_llm()
 ```
 
-The tool result has been injected into the prompt with `${tool.force}`.
+We can then hook this up inside the Newton node, and let the LLM use the tool output to proceed.
+(This assumes that the Newton-bot might struggle with the multiplication...)
+
+```python
+@ag.step(next="end")
+def newton(payload: Input) -> Answer:
+    # Here we'll call the compute_force tool that we registered earlier:
+    force = None
+    if payload.data and "m" in payload.data and "a" in payload.data:
+        tr = ag.tool("compute_force", mass=payload.data["m"], acceleration=payload.data["a"])
+        force = tr.output if tr.success else None
+        ag.emit({
+            "kind": "tool",
+            "name": "compute_force",
+            "input": {"mass": payload.data["m"], "acceleration": payload.data["a"]},
+            "output": tr.output,
+            "success": tr.success,
+        })
+
+    return ag.llm(
+        model=Answer,
+        prompt=f"""
+        You are Isaac Newton. 
+        Answer this Physics question in your personal style:
+
+        Question: {payload.question}
+        Data: {payload.data}
+        Force: {force}
+        """
+    )
+
+```
 
 ### 5. Make an "end" node
 
 ```python
-class Final(BaseModel):
-    final: Answer
-
 @ag.end
-def end_node(payload: Answer = ag.Payload) -> Final:
-    return Final(final=payload)
+def end(payload: Answer) -> Answer:
+    # Again, we'll just return the raw payload (you could do some final processing if you want).
+    return payload
 ```
 ### 6. Running the graph
 
@@ -171,48 +174,48 @@ out, ctx = app.run(run_spec)
 ```
 
 The output from the graph above:
+
 ```
-"final": {
-    "answer": 15.0,
-    "explanation": "F = ma, where F is the net force, m is mass (5 kg), and a is acceleration (3 m/s^2). Plugging in the values, we get F = 5 kg * 3 m/s^2 = 15 N."
+{
+  "answer": 15.0,
+  "explanation": "According to my laws of motion, F = ma. Given the mass m = 5 kg and acceleration a = 3 m/s^2, we can calculate the net force as F = m * a = 5 * 3 = 15 N."
 }
 ```
 
 ## Highlights
 
-- **Declarative Graph Construction**: Define workflow nodes with decorators (`@start`, `@step`, `@route`, `@end`). Each node can prompt an LLM, run custom Python, and more!
+- **Declarative Graph Construction**: Define workflow nodes with decorators (`@ag.start`, `@ag.step`, `@ag.route`, `@ag.end`). Each node can prompt an LLM, run custom Python, and more!
 
 - **Automatic Graph Compilation**: The API automatically compiles your code into a `networkx.DiGraph`. This makes it easy to view the graph structure and debug the workflow.
 
 - **Structured Inputs & Outputs**: Robust schema validation using **Pydantic** models.
 
-- **Custom Tooling**: Define tools that run automatically upon reaching a node, whose results are stored in a global `$context.tools` and can be dynamically injected into the LLM prompt. 
-
-- **Branching & Routing**: `@route` nodes use LLMs (or custom Python selectors) to choose the next edge. The options are strongly typed.
+- **Branching & Routing**: `@ag.route` nodes use LLMs (or custom Python selectors) to choose the next edge. The options are strongly typed.
 
 ## Execution Context & Artifacts 
 
 ### 1. Execution Context (`ctx`)
 
-Each run has a shared context dictionary that persists across nodes. Use if for scratch data, etc.
+Each run has a shared context dictionary that persists across nodes. Use if for scratch data, flags, counters, etc., via `ag.vars()`:
 
 Example:
 
 ```python
-@ag.step
-def stash_hint():
+@ag.step(next="read_hint")
+def stash_hint(payload: SomeSchema) -> SomeSchema:
     ag.vars()["hint"] = "something"
+    return payload
 
-@ag.step
-def read_hint():
-    hint = ag.vars().get("hint")
+@ag.step(next="end")
+def read_hint(payload: SomeSchema) -> SomeSchema:
+    hint = ag.vars().get("hint")  
+    # do something...
+    return payload
 ```
 
 ### 2. Logging with artifacts (via `emit()`)
 
 Nodes can produce artifacts: structured events that are appended to the run log. 
-
-Example:
 
 ```python
 ag.emit({"kind":"metrics", "token_usage": 42})
@@ -222,14 +225,11 @@ ag.emit({"kind":"metrics", "token_usage": 42})
 
 When a run finishes, `app.run(...)` returns both the final payload and the execution context (containing history and artifacts).
 
-Example:
-
 ```python
-output, ctx = app.run("Hi!")
+output, ctx = app.run({"question": "Hi!"})
 
 print(ctx.history)
 print(ctx.variables)
-print(ctx.artifacts)
 ```
 
 ## Visualization 
