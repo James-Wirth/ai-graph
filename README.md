@@ -3,7 +3,7 @@
 
 **AIGraph** is a lighweight, decorator-driven framework for building complex, graph-based agentic workflows. 
 
-It combines the ergonomics of writing plain Python functions with the robustness of typed, inspectable graphs, letting you design and run agentic systems with minimal ceremony.
+AIGraph lets you write nodes as plain Python functions, but wires them up into a graph with typed inputs and outputs. Under the hood it uses Pydantic for validation, so every edge between nodes is schema-checked. You get the convenience of just writing functions, plus the safety of strong types, without having to deal with excessive boilerplate.
 
 ## Example: Physics lesson with Newton and Einstein 
 
