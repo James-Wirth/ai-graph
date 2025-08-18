@@ -42,7 +42,11 @@ app = ag.App(
 
 ### 2. Make a "start" node 
 
-In this minimal example, we'll simply return the payload (auto-validated by the compiler).
+When the app is run with `app.run(...)`, the entry point of the graph is the function decorated with `@ag.start`.
+In this minimal example, the start node will simply return the payload without any pre-processing.
+
+We've specified the next node (`next="route"`) in the decorator. 
+The compiler will automatically create the edge when the graph is run, sending the output of this function to the next node.
 
 ```python
 class Input(BaseModel):
@@ -55,12 +59,13 @@ def start(payload: Input) -> Input:
     return payload
 ```
 
-We've specified the next node (`route`) in the decorator. The compiler will automatically create the edge when the graph is run. 
-
 ### 3. Choosing the best tutor with a "route" node
 
 Route nodes allow the LLM to make a choice on how to proceed through the graph. 
 You can also manually override this in the function body (for debugging, simple cases, etc.)
+
+In the example below, we've injected the question into the prompt with `{payload.question}`. 
+The routing agent returns either `"newton"` or `"einstein"` depending on the question, and proceeds to that node. 
 
 ```python
 @ag.route(cases=["newton", "einstein"]) 
@@ -79,13 +84,13 @@ def route(payload: Input) -> ag.Route[Literal["newton", "einstein"]]:
     )
 ```
 
-We've injected the question argument into the prompt with `{payload.question}`. 
-The routing agent returns either `"newton"` or `"einstein"` depending on the question, and proceeds to that node. 
-
 ### 4.1 Implementing the answers with "step" nodes for Newton and Einstein.
 
+Step nodes (decorated with `@ag.step`) are the core building blocks of the graph.
+In the example below, we've created two step nodes `newton` and `einstein`, which process the question and data (contained in the payload).
+
 We'll define a Pydantic model `Answer` to which the LLM output will be constrained.
-The `newton` and `einstein` nodes are both simple `@ag.step` nodes connected to the previous route node.
+For brevity, both Newton and Einstein use the same output schema below (but this doesn't have to be the case).
 
 ```python
 class Answer(BaseModel):
