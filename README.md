@@ -1,12 +1,23 @@
 # ai-graph
 
-![status](https://img.shields.io/badge/status-beta-yellow)
+[![status: active development](https://img.shields.io/badge/status-active--development-orange)]()
 
 **ai-graph** is a fairly lightweight, decorator-driven framework for building complex, graph-based agentic workflows. 
 
 The idea is to let you write nodes as decorated Python functions. The compiler automatically wires them up into a graph with typed inputs and outputs, using Pydantic for schema validation. You get the convenience of just writing decorated functions, plus the safety of strong types, without having to deal with excessive boilerplate.
 
 ai-graph supports a few key types of nodes: start nodes, end nodes, routing nodes (for decisions) and step nodes. 
+
+## Usage
+
+This library is under active development. 
+Expect frequent changes and breaking updates!
+
+```
+git clone https://github.com/James-Wirth/ai-graph.git
+cd aigraph
+pip install -e ".[dev]"  
+```
 
 ## Example: Physics lesson with Newton and Einstein 
 
