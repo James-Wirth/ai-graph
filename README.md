@@ -212,7 +212,7 @@ The output from the graph above:
 
 ## Execution Context & Artifacts 
 
-### 1. Execution Context (`ctx`)
+### 1. Execution Context
 
 Each run has a shared context dictionary that persists across nodes. Use if for scratch data, flags, counters, etc., via `ag.vars()`:
 
@@ -231,7 +231,7 @@ def read_hint(payload: SomeSchema) -> SomeSchema:
     return payload
 ```
 
-### 2. Logging with artifacts (via `emit()`)
+### 2. Logging with artifacts (via `emit`)
 
 Nodes can produce artifacts: structured events that are appended to the run log. 
 
