@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aigraph"
+version = "0.1.0"
+description = "Graph-based agentic orchestration for Python"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "James Wirth" }]
+
+dependencies = [
+  "pydantic>=2.6",
+  "networkx>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "coverage[toml]",
+  "ruff",
+  "black",
+  "mypy",
+  "pip-tools",   
+  "build",      
+]
+ollama = ["ollama>=0.3"]   
+viz = ["matplotlib>=3.8"]  
+
+[tool.setuptools.packages.find]
+where = ["."]            
+
+[tool.ruff]
+line-length = 100
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --maxfail=1"
+
+[tool.coverage.run]
+source = ["aigraph"]
+branch = true
