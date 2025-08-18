@@ -1,5 +1,6 @@
 # ai-graph
 
+![status](https://img.shields.io/badge/status-beta-yellow)
 
 **ai-graph** is a fairly lightweight, decorator-driven framework for building complex, graph-based agentic workflows. 
 
