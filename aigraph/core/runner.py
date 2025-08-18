@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from aigraph.core.agents import Agent
 from aigraph.core.tools import ToolRegistry, ToolResult
 
+
 class ExecutionContext:
     def __init__(self, run_id: Optional[str] = None):
         self.run_id = run_id or str(uuid.uuid4())
@@ -35,16 +36,23 @@ class ExecutionContext:
         except Exception:
             artifacts = None
 
-        self.history.append({
-            'timestamp': dt.datetime.now(dt.UTC).isoformat(),
-            'node': node,
-            'prompt': prompt,
-            'result': result.model_dump() if hasattr(result, 'model_dump') else getattr(result, '__dict__', None),
-            'neighbours': neighbours,
-            'decision': decision,
-            'tools_used': [t.model_dump() for t in (tools_used or [])],
-            'artifacts': artifacts,
-        })
+        self.history.append(
+            {
+                "timestamp": dt.datetime.now(dt.UTC).isoformat(),
+                "node": node,
+                "prompt": prompt,
+                "result": (
+                    result.model_dump()
+                    if hasattr(result, "model_dump")
+                    else getattr(result, "__dict__", None)
+                ),
+                "neighbours": neighbours,
+                "decision": decision,
+                "tools_used": [t.model_dump() for t in (tools_used or [])],
+                "artifacts": artifacts,
+            }
+        )
+
 
 class GraphRunner:
     def __init__(
@@ -61,7 +69,9 @@ class GraphRunner:
         for n, data in self.graph.nodes(data=True):
             agent = data.get("agent")
             if not isinstance(agent, Agent):
-                raise AssertionError(f"Node '{n}' does not contain a valid Agent (found: {type(agent)})")
+                raise AssertionError(
+                    f"Node '{n}' does not contain a valid Agent (found: {type(agent)})"
+                )
 
     def run(self, input_model: BaseModel, start_node: Any) -> Tuple[BaseModel, ExecutionContext]:
         if start_node not in self.graph:
@@ -103,7 +113,9 @@ class GraphRunner:
                 break
 
             if next_node not in neighbors:
-                raise AssertionError(f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}")
+                raise AssertionError(
+                    f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}"
+                )
 
             is_router = (node_def.kind == "route") if node_def else False
             if not is_router:

@@ -1,35 +1,45 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Annotated, get_origin, get_args
+from typing import Any, Dict, Annotated, get_origin, get_args
 from pydantic import BaseModel
+
 
 class Inject:
     __aigraph_inject__ = True
 
+
 @dataclass(frozen=True)
 class FromPayload(Inject):
-    path: str  
+    path: str
+
 
 @dataclass(frozen=True)
 class FromVar(Inject):
-    path: str  
+    path: str
+
 
 @dataclass(frozen=True)
 class FromTool(Inject):
-    name: str        
-    field: str = "output"  
+    name: str
+    field: str = "output"
+
 
 class Context(Inject): ...
+
+
 class Payload(Inject): ...
- 
-def resolve_tool_argmap(argmap: Dict[str, Any], *, last_output: Any, ctx_vars: Dict[str, Any], param_ns: Dict[str, Any]) -> Dict[str, Any]:
+
+
+def resolve_tool_argmap(
+    argmap: Dict[str, Any], *, last_output: Any, ctx_vars: Dict[str, Any], param_ns: Dict[str, Any]
+) -> Dict[str, Any]:
     def _get_path(root, path: str):
         cur = root
         for part in (path or "").split("."):
             if part == "":
                 continue
-            cur = (cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None))
+            cur = cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None)
             if cur is None:
                 break
         return cur
@@ -41,13 +51,13 @@ def resolve_tool_argmap(argmap: Dict[str, Any], *, last_output: Any, ctx_vars: D
             if v == "$input":
                 out[k] = payload
             elif v.startswith("$input."):
-                out[k] = _get_path(payload, v[len("$input."):])
+                out[k] = _get_path(payload, v[len("$input.") :])
             elif v == "$context":
                 out[k] = ctx_vars
             elif v.startswith("$context."):
-                out[k] = _get_path(ctx_vars, v[len("$context."):])
+                out[k] = _get_path(ctx_vars, v[len("$context.") :])
             elif v.startswith("$param."):
-                out[k] = _get_path(param_ns, v[len("$param."):])
+                out[k] = _get_path(param_ns, v[len("$param.") :])
             else:
                 out[k] = v
         else:
@@ -60,10 +70,11 @@ def get_path(root: Any, path: str) -> Any:
     for part in (path or "").split("."):
         if part == "":
             continue
-        cur = (cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None))
+        cur = cur.get(part) if isinstance(cur, dict) else getattr(cur, part, None)
         if cur is None:
             break
     return cur
+
 
 def _is_annotated_with(t, marker_type) -> tuple[bool, Any]:
     if get_origin(t) is Annotated:
@@ -74,6 +85,7 @@ def _is_annotated_with(t, marker_type) -> tuple[bool, Any]:
         return True, (base, None)
     return False, (t, None)
 
+
 def _coerce(value, typ):
     try:
         if value is None:
@@ -83,6 +95,7 @@ def _coerce(value, typ):
         return value
     except Exception:
         return value
+
 
 def resolve_fn_args(param_specs, payload, ctx_vars, tool_ns) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
@@ -133,7 +146,11 @@ def resolve_fn_args(param_specs, payload, ctx_vars, tool_ns) -> Dict[str, Any]:
             continue
         if isinstance(injected, FromTool):
             t = tool_ns.get(injected.name) or {}
-            out[name] = t if injected.field == "all" else (t.get(injected.field) if isinstance(t, dict) else None)
+            out[name] = (
+                t
+                if injected.field == "all"
+                else (t.get(injected.field) if isinstance(t, dict) else None)
+            )
             continue
 
         out[name] = coerce(get_path(payload, name), ann if is_anno else ann)

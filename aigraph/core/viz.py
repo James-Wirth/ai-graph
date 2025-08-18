@@ -12,12 +12,14 @@ from aigraph.core.agents import Agent
 
 def _compute_layout(G: nx.DiGraph) -> Dict[Any, Tuple[float, float]]:
     try:
-        from networkx.drawing.nx_agraph import graphviz_layout 
+        from networkx.drawing.nx_agraph import graphviz_layout
+
         return graphviz_layout(G, prog="dot")
     except Exception:
         pass
     try:
-        from networkx.drawing.nx_pydot import graphviz_layout as pydot_layout  
+        from networkx.drawing.nx_pydot import graphviz_layout as pydot_layout
+
         return pydot_layout(G, prog="dot")
     except Exception:
         pass
@@ -69,7 +71,7 @@ def render_workflow_graph(
             raise AssertionError(f"Node '{n}' missing a valid Agent (found: {type(agent)})")
 
         node_def = data.get("node_def")
-        is_router = (getattr(node_def, "kind", None) == "route")
+        is_router = getattr(node_def, "kind", None) == "route"
         is_terminal = G.out_degree(n) == 0
 
         if is_terminal:
@@ -105,7 +107,7 @@ def render_workflow_graph(
             pos,
             edgelist=path_edges,
             width=3.0,
-            edge_color="#d62728", 
+            edge_color="#d62728",
             arrows=True,
             arrowsize=18,
             arrowstyle="-|>",
@@ -117,12 +119,12 @@ def render_workflow_graph(
         if not nodes:
             return
 
-        edgecolors = [("#ff7f0e" if n in tool_capable else "#202124") for n in nodes]  
+        edgecolors = [("#ff7f0e" if n in tool_capable else "#202124") for n in nodes]
         linewidths = [(2.5 if n in tool_capable else 1.2) for n in nodes]
-   
+
         for i, n in enumerate(nodes):
             if start is not None and n == start:
-                edgecolors[i] = "#2ca02c"  
+                edgecolors[i] = "#2ca02c"
                 linewidths[i] = 3.0
 
         nx.draw_networkx_nodes(
@@ -137,9 +139,9 @@ def render_workflow_graph(
             ax=ax,
         )
 
-    _draw_nodes(normals, shape="o", facecolor="#e8eaed")  
-    _draw_nodes(routers, shape="s", facecolor="#d2e3fc")   
-    _draw_nodes(terminals, shape="D", facecolor="#fce8e6") 
+    _draw_nodes(normals, shape="o", facecolor="#e8eaed")
+    _draw_nodes(routers, shape="s", facecolor="#d2e3fc")
+    _draw_nodes(terminals, shape="D", facecolor="#fce8e6")
 
     labels = {n: str(n) for n in G.nodes()}
     nx.draw_networkx_labels(G, pos, labels=labels, font_size=10, ax=ax)
@@ -153,11 +155,7 @@ def render_workflow_graph(
         Line2D([0], [0], color="#2ca02c", lw=3, label="Start node"),
     ]
     ax.legend(
-        handles=legend_elems,
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.15),
-        ncol=3,
-        frameon=False
+        handles=legend_elems, loc="lower center", bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=False
     )
 
     if title:
@@ -178,16 +176,16 @@ def mermaid_from_graph(
 
     for n, data in G.nodes(data=True):
         label = str(n)
-        shape_open, shape_close = ("([", "])")  
+        shape_open, shape_close = ("([", "])")
 
         node_def = data.get("node_def")
         is_terminal = G.out_degree(n) == 0
-        is_router = (getattr(node_def, "kind", None) == "route")
+        is_router = getattr(node_def, "kind", None) == "route"
 
         if is_terminal:
-            shape_open, shape_close = ("{{", "}}") 
+            shape_open, shape_close = ("{{", "}}")
         elif is_router:
-            shape_open, shape_close = ("[", "]")    
+            shape_open, shape_close = ("[", "]")
 
         if start is not None and n == start:
             label = f"{label} ✦"

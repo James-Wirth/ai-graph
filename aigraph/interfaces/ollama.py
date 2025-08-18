@@ -5,15 +5,34 @@ from pydantic import BaseModel, ValidationError
 
 try:
     from ollama import chat
-    from ollama._types import ResponseError 
+    from ollama._types import ResponseError
 except Exception:
     chat = None
-    ResponseError = Exception  
+    ResponseError = Exception
 
 
 def _ollama_schema_sanitize(schema: Dict[str, Any]) -> Dict[str, Any]:
-    allowed_obj = {"type", "properties", "items", "required", "enum", "title", "additionalProperties"}
-    banned = {"$defs", "$ref", "allOf", "anyOf", "oneOf", "pattern", "format", "const", "not", "definitions"}
+    allowed_obj = {
+        "type",
+        "properties",
+        "items",
+        "required",
+        "enum",
+        "title",
+        "additionalProperties",
+    }
+    banned = {
+        "$defs",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "pattern",
+        "format",
+        "const",
+        "not",
+        "definitions",
+    }
 
     def clean(node: Any) -> Any:
         if isinstance(node, dict):
@@ -65,7 +84,8 @@ class OllamaInterface(LLMInterface):
         response_model: Union[Type[BaseModel], BaseModel],
     ) -> str:
         model_cls: Type[BaseModel] = (
-            response_model if isinstance(response_model, type) and issubclass(response_model, BaseModel)
+            response_model
+            if isinstance(response_model, type) and issubclass(response_model, BaseModel)
             else response_model.__class__
         )
 
@@ -86,13 +106,15 @@ class OllamaInterface(LLMInterface):
         except (ValidationError, ResponseError):
             pass
 
-        messages2 = messages + [{
-            "role": "system",
-            "content": (
-                "Respond with a single JSON object that matches this schema exactly. "
-                "No prose, no code fences.\n\n" + str(full_schema)
-            ),
-        }]
+        messages2 = messages + [
+            {
+                "role": "system",
+                "content": (
+                    "Respond with a single JSON object that matches this schema exactly. "
+                    "No prose, no code fences.\n\n" + str(full_schema)
+                ),
+            }
+        ]
         content3 = self._chat(messages2, fmt="json")
         content3 = re.sub(r"^```(?:json)?\s*|\s*```$", "", content3.strip())
         model_cls.model_validate_json(content3)

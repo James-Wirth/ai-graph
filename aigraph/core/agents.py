@@ -23,5 +23,3 @@ class Agent:
         if len(neighbors) == 1:
             return neighbors[0], "Only neighbor", 1.0
         return None, "No routing protocol defined", 0.5
-
-
