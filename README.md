@@ -1,8 +1,8 @@
-# aigraph
+# ai-graph
 
 [![status: active development](https://img.shields.io/badge/status-active--development-orange)]()
 
-**aigraph** is a fairly lightweight, decorator-driven framework for building complex, graph-based agentic workflows. 
+**ai-graph** is a fairly lightweight, decorator-driven framework for building complex, graph-based agentic workflows. 
 
 The idea is to let you write nodes as decorated Python functions. The compiler automatically wires them up into a graph with typed inputs and outputs, using Pydantic for schema validation. You get the convenience of just writing decorated functions, plus the safety of strong types, without having to deal with excessive boilerplate.
 
