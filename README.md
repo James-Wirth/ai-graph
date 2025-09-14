@@ -42,7 +42,7 @@ app = ag.App(
 
 ### 2. Make a "start" node 
 
-When the app is run with `app.run(...)`, the entry point of the graph is the function decorated with `@ag.start`.
+When the app is run with `app.run(...)`, the entry point of the graph is the function decorated with `@app.start`.
 In this minimal example, the start node will simply return the payload without any pre-processing.
 
 We've specified the next node (`next="route"`) in the decorator. 
@@ -53,7 +53,7 @@ class Input(BaseModel):
     question: str
     data: Optional[Dict[str, float]] = None
 
-@ag.start(next="route")
+@app.start(next="route")
 def start(payload: Input) -> Input:
     # You could do some pre-processing here if you felt like it...
     return payload
@@ -68,7 +68,7 @@ In the example below, we've injected the question into the prompt with `{payload
 The routing agent returns either `"newton"` or `"einstein"` depending on the question, and proceeds to that node. 
 
 ```python
-@ag.route(cases=["newton", "einstein"]) 
+@app.route(cases=["newton", "einstein"]) 
 def route(payload: Input) -> ag.Route[Literal["newton", "einstein"]]:
 
     # We'll let the LLM decide the route...
@@ -86,7 +86,7 @@ def route(payload: Input) -> ag.Route[Literal["newton", "einstein"]]:
 
 ### 4.1 Implementing the answers with "step" nodes for Newton and Einstein.
 
-Step nodes (decorated with `@ag.step`) are the core building blocks of the graph.
+Step nodes (decorated with `@app.step`) are the core building blocks of the graph.
 In the example below, we've created two step nodes `newton` and `einstein`, which process the question and data (contained in the payload).
 
 We'll define a Pydantic model `Answer` to which the LLM output will be constrained.
@@ -97,7 +97,7 @@ class Answer(BaseModel):
     answer: float
     explanation: str = Field(min_length=40, max_length=800)
 
-@ag.step(next="end")
+@app.step(next="end")
 def newton(payload: Input) -> Answer:
     # Return the structured output (w/ schema "Answer") from the LLM
     return ag.llm(
@@ -111,7 +111,7 @@ def newton(payload: Input) -> Answer:
         """
     )
 
-@ag.step(next="end")
+@app.step(next="end")
 def einstein(payload: Input) -> Answer:
     return ag.llm(
         model=Answer,
@@ -131,7 +131,7 @@ You can augment nodes with custom tools. The results of the tools can be injecte
 For example, we could define a (contrived) tool that calculates force from mass and acceleration:
 
 ```python
-@ag.tool
+@app.tool
 def compute_force(mass: float, acceleration: float) -> Optional[float]:
     try:
         return float(mass) * float(acceleration)
@@ -143,7 +143,7 @@ We can hook this up inside the Newton node, and let the LLM use the tool output 
 (This assumes that the Newton-bot might struggle with the multiplication...)
 
 ```python
-@ag.step(next="end")
+@app.step(next="end")
 def newton(payload: Input) -> Answer:
     # Here we'll call the compute_force tool that we registered earlier:
     force = None
@@ -175,7 +175,7 @@ def newton(payload: Input) -> Answer:
 ### 5. Make an "end" node
 
 ```python
-@ag.end
+@app.end()
 def end(payload: Answer) -> Answer:
     # Again, we'll just return the raw payload for now.
     # You could do some final processing here.
@@ -202,13 +202,13 @@ The output from the graph above:
 
 ## Highlights
 
-- **Declarative Graph Construction**: Define workflow nodes with decorators (`@ag.start`, `@ag.step`, `@ag.route`, `@ag.end`). Each node can prompt an LLM, run custom Python, and more!
+- **Declarative Graph Construction**: Define workflow nodes with decorators (`@app.start`, `@app.step`, `@app.route`, `@app.end`). Each node can prompt an LLM, run custom Python, and more!
 
 - **Automatic Graph Compilation**: The API automatically compiles your code into a `networkx.DiGraph`. This makes it easy to view the graph structure and debug the workflow.
 
 - **Structured Inputs & Outputs**: Robust schema validation using **Pydantic** models.
 
-- **Branching & Routing**: `@ag.route` nodes use LLMs (or custom Python selectors) to choose the next edge. The options are strongly typed.
+- **Branching & Routing**: `@app.route` nodes use LLMs (or custom Python selectors) to choose the next edge. The options are strongly typed.
 
 ## Execution Context & Artifacts 
 
@@ -219,12 +219,12 @@ Each run has a shared context dictionary that persists across nodes. Use if for 
 Example:
 
 ```python
-@ag.step(next="read_hint")
+@app.step(next="read_hint")
 def stash_hint(payload: SomeSchema) -> SomeSchema:
     ag.vars()["hint"] = "something"
     return payload
 
-@ag.step(next="end")
+@app.step(next="end")
 def read_hint(payload: SomeSchema) -> SomeSchema:
     hint = ag.vars().get("hint")  
     # do something...
