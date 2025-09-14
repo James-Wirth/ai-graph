@@ -70,8 +70,6 @@ def vars() -> Dict[str, Any]:
 # (that you call manually in the function body, for now...)
 ################################
 
-_PENDING_TOOLS: List[FunctionTool] = []
-
 
 def tool(*args, **kwargs):
     if args and isinstance(args[0], str):
@@ -81,18 +79,9 @@ def tool(*args, **kwargs):
         if not reg:
             raise RuntimeError("No ToolRegistry available in this run scope.")
         return reg.get(name).call(payload)
-
-    name = kwargs.pop("name", None)
-    description = kwargs.pop("description", None)
-
-    def _decorator(fn: Callable) -> FunctionTool:
-        ft = FunctionTool(fn, name=name, description=description)
-        _PENDING_TOOLS.append(ft)
-        return ft
-
-    if args and callable(args[0]):
-        return _decorator(args[0])
-    return _decorator
+    raise RuntimeError(
+        "Decorator-style @ag.tool is no longer supported. Use @app.tool on a specific App instance."
+    )
 
 
 def emit(artifact: Dict[str, Any]) -> None:
@@ -187,74 +176,6 @@ class AppConfig(BaseModel):
 
 
 ################################
-# Decorators
-# (We love to hate them and hate to love them)
-################################
-
-_NODE_REGISTRY: Dict[str, NodeDef] = {}
-
-
-def _func_name(f: Union[str, Callable, None]) -> Optional[str]:
-    if f is None:
-        return None
-    return f if isinstance(f, str) else f.__name__
-
-
-class _StartDecorator:
-    def __call__(self, fn: Optional[Callable] = None, *, next: Union[str, Callable, None] = None):
-        def wrap(f: Callable) -> Callable:
-            _ensure_single_param(f, "@start")
-            nd = NodeDef(func=f, kind="start", name=f.__name__, next_default=_func_name(next))
-            _ensure_return_type(nd, f)
-            _NODE_REGISTRY[f.__name__] = nd
-            return f
-
-        return wrap if fn is None else wrap(fn)
-
-
-class _StepDecorator:
-    def __call__(
-        self, fn: Optional[Callable] = None, *, next: Optional[Union[str, Callable]] = None
-    ):
-        def wrap(f: Callable) -> Callable:
-            _ensure_single_param(f, "@step")
-            nd = NodeDef(func=f, kind="step", name=f.__name__, next_default=_func_name(next))
-            _ensure_return_type(nd, f)
-            _NODE_REGISTRY[f.__name__] = nd
-            return f
-
-        return wrap if fn is None else wrap(fn)
-
-
-class _RouteDecorator:
-    def __call__(self, fn: Optional[Callable] = None, *, cases: List[str]):
-        def wrap(f: Callable) -> Callable:
-            _ensure_single_param(f, "@route")
-            nd = NodeDef(func=f, kind="route", name=f.__name__, cases=list(cases or []))
-            _ensure_route_return_type(nd, f)
-            if not nd.cases:
-                raise RuntimeError(f"@route '{f.__name__}' requires non-empty cases=[...].")
-            _NODE_REGISTRY[f.__name__] = nd
-            return f
-
-        return wrap if fn is None else wrap(fn)
-
-
-class _EndDecorator:
-    def __call__(self, fn: Callable) -> Callable:
-        _ensure_single_param(fn, "@end")
-        nd = NodeDef(func=fn, kind="end", name=fn.__name__)
-        _ensure_return_type(nd, fn)
-        _NODE_REGISTRY[fn.__name__] = nd
-        return fn
-
-
-start = _StartDecorator()
-step = _StepDecorator()
-route = _RouteDecorator()
-end = _EndDecorator()
-
-################################
 # Result
 # (Maybe it's useful for this to be here explicitly)
 ################################
@@ -271,25 +192,90 @@ class Result:
 ################################
 
 
+def _func_name(f: Union[str, Callable, None]) -> Optional[str]:
+    if f is None:
+        return None
+    return f if isinstance(f, str) else f.__name__
+
+
 class App:
     def __init__(self, **kwargs) -> None:
         self.cfg = AppConfig(**kwargs)
         self._registry = ToolRegistry()
         self._compiled: Optional[Tuple[Any, str]] = None
+        self._nodes: Dict[str, NodeDef] = {}
+
+    def _register_node(self, nd: NodeDef) -> None:
+        if nd.name in self._nodes:
+            raise RuntimeError(f"Node '{nd.name}' already registered on app '{self.cfg.name}'.")
+        self._nodes[nd.name] = nd
+
+    def start(self, *, next: Union[str, Callable, None] = None):
+        def _decorator(fn: Callable) -> Callable:
+            _ensure_single_param(fn, "@start")
+            nd = NodeDef(func=fn, kind="start", name=fn.__name__, next_default=_func_name(next))
+            _ensure_return_type(nd, fn)
+            self._register_node(nd)
+            return fn
+
+        return _decorator
+
+    def step(self, *, next: Union[str, Callable, None] = None):
+        def _decorator(fn: Callable) -> Callable:
+            _ensure_single_param(fn, "@step")
+            nd = NodeDef(func=fn, kind="step", name=fn.__name__, next_default=_func_name(next))
+            _ensure_return_type(nd, fn)
+            self._register_node(nd)
+            return fn
+
+        return _decorator
+
+    def route(self, *, cases: List[str]):
+        def _decorator(fn: Callable) -> Callable:
+            _ensure_single_param(fn, "@route")
+            nd = NodeDef(func=fn, kind="route", name=fn.__name__, cases=list(cases or []))
+            _ensure_route_return_type(nd, fn)
+            if not nd.cases:
+                raise RuntimeError(f"@route '{fn.__name__}' requires non-empty cases=[...].")
+            self._register_node(nd)
+            return fn
+
+        return _decorator
+
+    def end(self):
+        def _decorator(fn: Callable) -> Callable:
+            _ensure_single_param(fn, "@end")
+            nd = NodeDef(func=fn, kind="end", name=fn.__name__)
+            _ensure_return_type(nd, fn)
+            self._register_node(nd)
+            return fn
+
+        return _decorator
+
+    def tool(
+        self,
+        fn: Optional[Callable] = None,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ):
+        def _wrap(f: Callable):
+            ft = FunctionTool(f, name=name, description=description)
+            self._registry.register(ft)
+            return f
+
+        return _wrap if fn is None else _wrap(fn)
 
     def register_tool(self, tool: FunctionTool) -> None:
         self._registry.register(tool)
 
     def _compile(self) -> Tuple[Any, str]:
-        if not _NODE_REGISTRY:
-            raise RuntimeError("No nodes declared. Use @ag.start/@ag.step/@ag.route/@ag.end.")
+        if not self._nodes:
+            raise RuntimeError("No nodes declared. Use @app.start/@app.step/@app.route/@app.end.")
 
-        for t in _PENDING_TOOLS:
-            self._registry.register(t)
-
-        starts = [n for n in _NODE_REGISTRY.values() if n.kind == "start"]
+        starts = [n for n in self._nodes.values() if n.kind == "start"]
         if len(starts) != 1:
-            raise RuntimeError(f"Expected exactly one @ag.start node, found {len(starts)}.")
+            raise RuntimeError(f"Expected exactly one @app.start node, found {len(starts)}.")
         start_def = starts[0]
 
         agents: Dict[str, Agent] = {}
@@ -299,77 +285,84 @@ class App:
             artifacts: List[Dict[str, Any]] | None = None
 
         class _PyAgent(Agent):
-            def __init__(self, node: NodeDef) -> None:
+            def __init__(self, node: NodeDef, *, cfg: AppConfig, tools: ToolRegistry) -> None:
                 super().__init__(node.name)
                 self.node = node
+                self.cfg = cfg
+                self.tools = tools
+
+            def _llm_choice(self, *, cases: List[str], prompt: str) -> str:
+                ChoiceModel = create_model("ChoiceModel", choice=(str, ...))
+                obj = llm(model=ChoiceModel, prompt=prompt)
+                choice = (getattr(obj, "choice", "") or "").strip()
+                if choice not in cases:
+                    raise ValueError(
+                        f"Route '{self.node.name}' chose invalid case '{choice}'. Allowed: {sorted(cases)}"
+                    )
+                return choice
 
             def process(self, input_model: BaseModel, context: Dict[str, Any]) -> BaseModel:
-                _scope().payload = getattr(input_model, "payload", input_model)
-                _scope().vars = context
-                _scope().tool_registry = self_app._registry
-                _scope().app_cfg = self_app.cfg
-                _scope().artifacts = []
+                sc = _scope()
+                sc.payload = getattr(input_model, "payload", input_model)
+                sc.vars = context
+                sc.tool_registry = self.tools
+                sc.app_cfg = self.cfg
+                sc.artifacts = []
 
-                raw_payload = _scope().payload
+                raw_payload = sc.payload
+
                 sig = inspect.signature(self.node.func)
                 if len(sig.parameters) != 1:
                     raise TypeError(
                         f"Node '{self.node.name}' must accept exactly one argument (payload)."
                     )
 
-                ((param_name, param),) = sig.parameters.items()
+                ((_, param),) = sig.parameters.items()
                 param_ann = param.annotation
                 payload_for_func = raw_payload
-                payload_for_pass = raw_payload
+                passthrough_payload = raw_payload
 
                 if isinstance(param_ann, type) and issubclass(param_ann, BaseModel):
                     try:
                         coerced = param_ann.model_validate(raw_payload)
                         payload_for_func = coerced
-                        payload_for_pass = coerced.model_dump()
+                        passthrough_payload = coerced.model_dump()
                     except Exception as e:
                         raise TypeError(
-                            f"Node '{self.node.name}' expected payload of type {param_ann.__name__} but got incompatible input: {e}"
+                            f"Node '{self.node.name}' expected payload of type {param_ann.__name__} "
+                            f"but got incompatible input: {e}"
                         ) from e
 
                 rv = self.node.func(payload_for_func)
+
                 if self.node.kind == "route":
-                    choice = None
                     if isinstance(rv, Route):
                         if rv.case is not None:
                             choice = str(rv.case)
+                            if choice not in (self.node.cases or []):
+                                raise ValueError(
+                                    f"Route '{self.node.name}' chose invalid case '{choice}'. "
+                                    f"Allowed: {sorted(self.node.cases)}"
+                                )
                         else:
                             prompt = rv.prompt or ""
-                            import enum
-
-                            ChoicesEnum = enum.Enum("ChoicesEnum", {c: c for c in self.node.cases})
-                            RouteOut = create_model("RouteOut", choice=(ChoicesEnum, ...))
-                            obj = llm(model=RouteOut, prompt=prompt)
-                            v = getattr(obj, "choice", None)
-                            choice = getattr(v, "value", None)
+                            choice = self._llm_choice(cases=self.node.cases or [], prompt=prompt)
                     elif isinstance(rv, str):
                         choice = rv
+                        if choice not in (self.node.cases or []):
+                            raise ValueError(
+                                f"Route '{self.node.name}' chose invalid case '{choice}'. "
+                                f"Allowed: {sorted(self.node.cases)}"
+                            )
                     else:
-                        try:
-                            import enum
-
-                            if isinstance(rv, enum.Enum):
-                                choice = str(rv.value)
-                        except Exception:
-                            pass
-
-                    if choice not in self.node.cases:
-                        raise ValueError(
-                            f"Route '{self.node.name}' chose invalid case '{choice}'. Allowed: {sorted(self.node.cases)}"
+                        raise TypeError(
+                            f"Route '{self.node.name}' must return ag.Route[...] or str; got {type(rv)}."
                         )
+
                     context.setdefault("_route", {})[self.node.name] = choice
-
-                    from pydantic import BaseModel as _BM
-
-                    passthrough = payload_for_pass
-                    if isinstance(passthrough, _BM):
-                        passthrough = passthrough.model_dump()
-                    return _PayloadModel(payload=passthrough, artifacts=_scope().artifacts or None)
+                    return _PayloadModel(
+                        payload=passthrough_payload, artifacts=sc.artifacts or None
+                    )
 
                 if isinstance(rv, Result):
                     payload_out = rv.payload
@@ -378,22 +371,17 @@ class App:
                     payload_out = rv
                     artifacts_out = []
 
-                if (
-                    self.node.returns
-                    and isinstance(self.node.returns, type)
-                    and issubclass(self.node.returns, BaseModel)
-                ):
+                ret_model = self.node.returns
+                if isinstance(ret_model, type) and issubclass(ret_model, BaseModel):
                     try:
-                        validated = self.node.returns.model_validate(payload_out)
-                        payload_out = validated.model_dump()
+                        validated = ret_model.model_validate(payload_out)
                     except Exception as e:
                         raise TypeError(
-                            f"Node '{self.node.name}' returned invalid payload for {self.node.returns.__name__}: {e}"
+                            f"Node '{self.node.name}' returned invalid payload for {ret_model.__name__}: {e}"
                         ) from e
+                    payload_out = validated.model_dump()
 
-                scope_artifacts = _scope().artifacts or []
-                all_artifacts = (artifacts_out or []) + scope_artifacts
-
+                all_artifacts = (artifacts_out or []) + (sc.artifacts or [])
                 return _PayloadModel(payload=payload_out, artifacts=all_artifacts or None)
 
             def route(
@@ -409,20 +397,18 @@ class App:
                 choice = (context.get("_route") or {}).get(self.node.name)
                 if choice is None:
                     return None, "No route choice recorded", 0.1
-                target = choice
-                if target not in neighbors:
+                if choice not in neighbors:
                     raise AssertionError(
-                        f"[{self.node.name}] Route for '{choice}' points to non-neighbor '{target}'."
+                        f"[{self.node.name}] Route for '{choice}' points to non-neighbor '{choice}'."
                     )
-                return target, f"Route chose '{choice}'", 0.9
+                return choice, f"Route chose '{choice}'", 0.9
 
-        self_app = self
-        for name, node in _NODE_REGISTRY.items():
-            agents[name] = _PyAgent(node)
+        for name, node in self._nodes.items():
+            agents[name] = _PyAgent(node, cfg=self.cfg, tools=self._registry)
 
         G = graph_from_agents(agents, start=start_def.name)
 
-        for node in _NODE_REGISTRY.values():
+        for node in self._nodes.values():
             if node.next_default:
                 if node.next_default not in agents:
                     raise RuntimeError(
@@ -438,9 +424,9 @@ class App:
                         )
                     G.add_edge(node.name, target)
 
-        for name, node in _NODE_REGISTRY.items():
+        for name, node in self._nodes.items():
             if name in G.nodes:
-                G.nodes[name]["node_def"] = _to_runner_node(node)
+                G.nodes[name]["node_def"] = node
 
         self._compiled = (G, start_def.name)
         return self._compiled
@@ -497,23 +483,6 @@ class App:
                 return True
 
         return _Expect(**kwargs)
-
-
-################################
-# Runner node view
-################################
-
-
-def _to_runner_node(node: NodeDef):
-    class _RunnerNode:
-        def __init__(self, nd: NodeDef):
-            self.func = nd.func
-            self.kind = nd.kind
-            self.name = nd.name
-            self.next_default = nd.next_default
-            self.cases = list(nd.cases or [])
-
-    return _RunnerNode(node)
 
 
 ################################
@@ -582,12 +551,7 @@ def _ensure_route_return_type(node: NodeDef, fn: Callable) -> None:
 
 
 __all__ = [
-    "start",
-    "step",
-    "route",
-    "end",
     "data",
-    "set_data",
     "vars",
     "tool",
     "emit",
