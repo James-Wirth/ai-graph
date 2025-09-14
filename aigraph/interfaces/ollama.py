@@ -1,5 +1,5 @@
+# aigraph/interfaces/ollama.py
 import re
-
 from typing import Any, Dict, List, Type, Union
 from pydantic import BaseModel, ValidationError
 
@@ -53,10 +53,7 @@ def _ollama_schema_sanitize(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 class LLMInterface:
     def generate(
-        self,
-        *,
-        messages: List[Dict[str, Any]],
-        response_model: Union[Type[BaseModel], BaseModel],
+        self, *, messages: List[Dict[str, Any]], response_model: Union[Type[BaseModel], BaseModel]
     ) -> str:
         raise NotImplementedError
 
@@ -78,26 +75,20 @@ class OllamaInterface(LLMInterface):
         return resp.get("message", {}).get("content", "")
 
     def generate(
-        self,
-        *,
-        messages: List[Dict[str, Any]],
-        response_model: Union[Type[BaseModel], BaseModel],
+        self, *, messages: List[Dict[str, Any]], response_model: Union[Type[BaseModel], BaseModel]
     ) -> str:
         model_cls: Type[BaseModel] = (
             response_model
             if isinstance(response_model, type) and issubclass(response_model, BaseModel)
             else response_model.__class__
         )
-
         full_schema = model_cls.model_json_schema()
-
         try:
             content = self._chat(messages, fmt=full_schema)
             model_cls.model_validate_json(content)
             return content
         except (ValidationError, ResponseError):
             pass
-
         try:
             clean_schema = _ollama_schema_sanitize(full_schema)
             content2 = self._chat(messages, fmt=clean_schema)

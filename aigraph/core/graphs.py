@@ -1,15 +1,17 @@
+# aigraph/core/graphs.py
 import networkx as nx
+from typing import Dict
+from aigraph.core.nodes import Node
 
-from typing import Dict, Any
-from aigraph.core.agents import Agent
 
-
-def graph_from_agents(agents: Dict[Any, Agent], start: Any) -> nx.DiGraph:
-    g = nx.DiGraph()
-    for node, agent in agents.items():
-        g.add_node(node, agent=agent)
-
-    if start not in agents:
-        raise AssertionError(f"Start node '{start}' not found")
-
-    return g
+def graph_from_nodes(nodes: Dict[str, Node]) -> nx.DiGraph:
+    G = nx.DiGraph()
+    for n in nodes.values():
+        G.add_node(n.name, kind="node", node=n)
+        for t in n.consumes:
+            G.add_node(t, kind="msg")
+            G.add_edge(t, n.name)
+        for t in n.emits:
+            G.add_node(t, kind="msg")
+            G.add_edge(n.name, t)
+    return G

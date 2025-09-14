@@ -1,13 +1,9 @@
-import logging
+# aigraph/core/tools.py
 import inspect
-
-from typing import Any, Dict, Optional, Callable
+import logging
+from typing import Any, Callable, Dict, Optional
 from pydantic import BaseModel, Field
-
-
-class ToolCall(BaseModel):
-    name: str
-    input: Dict[str, Any] = Field(default_factory=dict)
+from aigraph.core.messages import Message
 
 
 class ToolResult(BaseModel):
@@ -17,6 +13,19 @@ class ToolResult(BaseModel):
     success: bool
     error: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    def to_msg(self) -> Message:
+        return Message(
+            type="tool.result.v1",
+            body={
+                "name": self.name,
+                "input": self.input,
+                "output": self.output,
+                "success": self.success,
+                "error": self.error,
+                "metadata": self.metadata,
+            },
+        )
 
 
 class Tool:
@@ -55,15 +64,6 @@ class FunctionTool(Tool):
             return ToolResult(
                 name=self.name, input=payload, output=None, success=False, error=str(e)
             )
-
-
-def tool(
-    fn: Optional[Callable] = None, name: Optional[str] = None, description: Optional[str] = None
-):
-    def wrap(_fn: Callable) -> FunctionTool:
-        return FunctionTool(_fn, name=name, description=description)
-
-    return wrap(fn) if fn else wrap
 
 
 class ToolRegistry:

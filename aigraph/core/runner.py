@@ -1,13 +1,14 @@
+# aigraph/core/runner.py
+from __future__ import annotations
+import datetime as dt
 import logging
 import networkx as nx
-import datetime as dt
 import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from typing import Any, Dict, Optional, List, Tuple
-from pydantic import BaseModel
-
-from aigraph.core.agents import Agent
-from aigraph.core.tools import ToolRegistry, ToolResult
+from aigraph.core.bus import MessageBus
+from aigraph.core.messages import Message
 
 
 class ExecutionContext:
@@ -17,111 +18,95 @@ class ExecutionContext:
         self.variables: Dict[str, Any] = {}
         self.created_at = dt.datetime.now(dt.UTC)
 
-    def record_step(
+    def record_bus_event(
         self,
-        node: Any,
-        prompt: Optional[str],
-        result: BaseModel,
-        neighbours: List[Any],
-        decision: Dict[str, Any],
-        tools_used: Optional[List[ToolResult]] = None,
+        *,
+        node: Optional[str],
+        consumed: Optional[str],
+        emitted: List[str],
+        details: str = "",
     ):
-        artifacts = None
-        try:
-            if hasattr(result, "artifacts"):
-                artifacts = result.artifacts
-            elif isinstance(result, BaseModel):
-                md = result.model_dump()
-                artifacts = md.get("artifacts")
-        except Exception:
-            artifacts = None
-
         self.history.append(
             {
                 "timestamp": dt.datetime.now(dt.UTC).isoformat(),
                 "node": node,
-                "prompt": prompt,
-                "result": (
-                    result.model_dump()
-                    if hasattr(result, "model_dump")
-                    else getattr(result, "__dict__", None)
-                ),
-                "neighbours": neighbours,
-                "decision": decision,
-                "tools_used": [t.model_dump() for t in (tools_used or [])],
-                "artifacts": artifacts,
+                "consumed": consumed,
+                "emitted": emitted,
+                "details": details,
             }
         )
 
 
-class GraphRunner:
-    def __init__(
-        self,
-        graph: nx.DiGraph,
-        tool_registry: ToolRegistry = None,
-        max_steps: int = 10,
-    ):
+@dataclass
+class BusEvent:
+    timestamp: str
+    node: Optional[str]
+    consumed: Optional[str]
+    emitted_types: List[str]
+    emitted_msgs: List[Message]
+    details: str = ""
+
+
+class MessageRunner:
+    def __init__(self, graph: nx.DiGraph, max_steps: int = 64):
         self.graph = graph
-        self.tool_registry = tool_registry or ToolRegistry()
         self.max_steps = max_steps
         self.logger = logging.getLogger("aigraph.runner")
 
-        for n, data in self.graph.nodes(data=True):
-            agent = data.get("agent")
-            if not isinstance(agent, Agent):
-                raise AssertionError(
-                    f"Node '{n}' does not contain a valid Agent (found: {type(agent)})"
-                )
-
-    def run(self, input_model: BaseModel, start_node: Any) -> Tuple[BaseModel, ExecutionContext]:
-        if start_node not in self.graph:
-            raise AssertionError(f"Start node '{start_node}' not in graph")
+    def run(self, initial_messages: List[Message]) -> Tuple[List[Message], ExecutionContext]:
         ctx = ExecutionContext()
-        current_node = start_node
-        last_output: Optional[BaseModel] = input_model
-        step = 0
+        bus = MessageBus(max_steps=self.max_steps)
 
-        self.logger.info("Starting workflow run %s at node %s", ctx.run_id, current_node)
+        for _, data in self.graph.nodes(data=True):
+            if data.get("kind") == "node":
+                n = data["node"]
+                for t in n.consumes:
+                    bus.subscribe(t, n)
 
-        while True:
-            if step >= self.max_steps:
-                break
+        for m in initial_messages:
+            bus.publish(m)
 
-            agent: Agent = self.graph.nodes[current_node]["agent"]
-            node_def = self.graph.nodes[current_node].get("node_def")
-            tools_used: List[ToolResult] = []
-            prompt_text: Optional[str] = None
-
-            ctx.variables.setdefault("tools", {})
-            output = agent.process(last_output, ctx.variables)
-
-            neighbors = list(self.graph.neighbors(current_node))
-            next_node, rationale, confidence = agent.route(neighbors, ctx.variables, output)
-
-            ctx.record_step(
-                node=current_node,
-                prompt=prompt_text,
-                result=output,
-                neighbours=neighbors,
-                decision={"next_node": next_node, "rationale": rationale, "confidence": confidence},
-                tools_used=tools_used,
+        emitted, history = bus.run(context=ctx.variables)
+        for ev in history:
+            ctx.record_bus_event(
+                node=ev.get("node"),
+                consumed=ev.get("consumed"),
+                emitted=ev.get("emitted") or [],
+                details=ev.get("details", ""),
             )
+        return emitted, ctx
 
-            if next_node is None:
-                self.logger.info("Terminal at node %s (%s)", current_node, rationale)
-                last_output = output
-                break
+    def run_iter(
+        self, initial_messages: List[Message]
+    ) -> Generator[BusEvent, None, Tuple[List[Message], ExecutionContext]]:
+        ctx = ExecutionContext()
+        bus = MessageBus(max_steps=self.max_steps)
 
-            if next_node not in neighbors:
-                raise AssertionError(
-                    f"Agent '{agent.name}' chose invalid neighbor '{next_node}' from {neighbors}"
+        for _, data in self.graph.nodes(data=True):
+            if data.get("kind") == "node":
+                n = data["node"]
+                for t in n.consumes:
+                    bus.subscribe(t, n)
+
+        for m in initial_messages:
+            bus.publish(m)
+
+        try:
+            for out, ev in bus.iter_run(context=ctx.variables):
+                ctx.record_bus_event(
+                    node=ev.get("node"),
+                    consumed=ev.get("consumed"),
+                    emitted=ev.get("emitted") or [],
+                    details=ev.get("details", ""),
                 )
-
-            is_router = (node_def.kind == "route") if node_def else False
-            if not is_router:
-                last_output = output
-
-            current_node = next_node
-            step += 1
-
-        return last_output, ctx
+                yield BusEvent(
+                    timestamp=ev["timestamp"],
+                    node=ev["node"],
+                    consumed=ev["consumed"],
+                    emitted_types=ev["emitted"],
+                    emitted_msgs=out,
+                    details=ev.get("details", ""),
+                )
+        except StopIteration as stop:
+            emitted, _history = stop.value
+            return emitted, ctx
