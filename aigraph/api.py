@@ -76,9 +76,8 @@ def llm(
     if sc.app_cfg is None:
         raise RuntimeError("Application config missing in scope; cannot call llm().")
     if sc.llm_iface is None:
-        sc.llm_iface = OllamaInterface(
-            model=sc.app_cfg.model, temperature=temperature or sc.app_cfg.temperature
-        )
+        temp = sc.app_cfg.temperature if temperature is None else temperature
+        sc.llm_iface = OllamaInterface(model=sc.app_cfg.model, temperature=temp)
 
     messages: List[Dict[str, str]] = []
     messages.append(
