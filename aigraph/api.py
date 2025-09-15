@@ -221,6 +221,8 @@ class App:
 
         for name, n in nodes.items():
             if name in G.nodes:
+                G.nodes[name]["kind"] = "node"
+                G.nodes[name]["node"] = n
                 G.nodes[name]["node_def"] = self._nodes[name]
                 G.nodes[name]["consumes"] = list(getattr(n, "consumes", []))
                 G.nodes[name]["emits"] = list(getattr(n, "emits", []))
