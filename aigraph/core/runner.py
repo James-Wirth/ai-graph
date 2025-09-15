@@ -4,10 +4,10 @@ import datetime as dt
 import logging
 import networkx as nx
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from aigraph.core.bus import MessageBus
 from aigraph.core.messages import Message
 
 
@@ -47,6 +47,16 @@ class BusEvent:
     details: str = ""
 
 
+def _due(m: Message) -> bool:
+    at = m.headers.get("deliver_at")
+    if not at:
+        return True
+    try:
+        return dt.datetime.now(dt.UTC) >= dt.datetime.fromisoformat(at)
+    except Exception:
+        return True
+
+
 class MessageRunner:
     def __init__(self, graph: nx.DiGraph, max_steps: int = 64):
         self.graph = graph
@@ -71,68 +81,145 @@ class MessageRunner:
                 m.headers.get("parent_id"),
             )
 
-    def run(self, initial_messages: List[Message]) -> Tuple[List[Message], ExecutionContext]:
-        ctx = ExecutionContext()
-        bus = MessageBus(max_steps=self.max_steps)
-
+    def _build_subscriptions(self) -> Dict[str, List[Any]]:
+        subs: Dict[str, List[Any]] = defaultdict(list)
         for _, data in self.graph.nodes(data=True):
-            if data.get("kind") == "node":
-                n = data["node"]
-                for t in n.consumes:
-                    bus.subscribe(t, n)
+            node_obj = data.get("node")
+            if node_obj is None:
+                continue
+            for t in getattr(node_obj, "consumes", []) or []:
+                subs[t].append(node_obj)
+        return subs
 
-        for m in initial_messages:
-            bus.publish(m)
+    def _merge_artifacts(self, outs: List[Message], node_obj: Any) -> List[Message]:
+        ctx = getattr(node_obj, "ctx", None)
+        if not ctx or not getattr(ctx, "artifacts", None):
+            return outs
+        merged: List[Message] = []
+        artifacts_payload = [getattr(a, "__dict__", a) for a in ctx.artifacts]
+        for om in outs:
+            headers = dict(om.headers)
+            prev = headers.get("artifacts", [])
+            headers["artifacts"] = list(prev) + artifacts_payload
+            merged.append(Message(type=om.type, body=om.body, headers=headers))
+        ctx.artifacts.clear()
+        return merged
 
-        emitted, history = bus.run(context=ctx.variables)
-        for ev in history:
-            ctx.record_bus_event(
-                node=ev.get("node"),
-                consumed=ev.get("consumed"),
-                emitted=ev.get("emitted") or [],
-                details=ev.get("details", ""),
-            )
-            try:
-                self._log_event(ev, [])
-            except Exception:
-                pass
+    def _correlate(self, parent: Message, outs: List[Message]) -> List[Message]:
+        corr = parent.headers.get("correlation_id", parent.id)
+        fixed: List[Message] = []
+        for om in outs:
+            if om.headers.get("correlation_id"):
+                fixed.append(om)
+            else:
+                fixed.append(om.with_header(correlation_id=corr, parent_id=parent.id))
+        return fixed
+
+    def run(self, initial_messages: List[Message]) -> Tuple[List[Message], ExecutionContext]:
+        gen = self.run_iter(initial_messages)
+        emitted: List[Message] = []
+        ctx: Optional[ExecutionContext] = None
+        try:
+            while True:
+                _ = next(gen)
+        except StopIteration as stop:
+            emitted, ctx = stop.value
         return emitted, ctx
 
     def run_iter(
         self, initial_messages: List[Message]
     ) -> Generator[BusEvent, None, Tuple[List[Message], ExecutionContext]]:
         ctx = ExecutionContext()
-        bus = MessageBus(max_steps=self.max_steps)
+        subs = self._build_subscriptions()
 
-        for _, data in self.graph.nodes(data=True):
-            if data.get("kind") == "node":
-                n = data["node"]
-                for t in n.consumes:
-                    bus.subscribe(t, n)
+        queue: deque[Message] = deque(initial_messages)
+        seen: set[str] = set()
+        emitted_all: List[Message] = []
+        steps = 0
 
-        for m in initial_messages:
-            bus.publish(m)
+        def _record_and_yield(
+            node_name: Optional[str],
+            consumed: Optional[str],
+            outs: List[Message],
+            details: str = "",
+        ) -> BusEvent:
+            ev = {
+                "timestamp": dt.datetime.now(dt.UTC).isoformat(),
+                "node": node_name,
+                "consumed": consumed,
+                "emitted": [m.type for m in outs],
+                "details": details,
+            }
+            ctx.record_bus_event(
+                node=node_name, consumed=consumed, emitted=ev["emitted"], details=details
+            )
+            try:
+                self._log_event(ev, outs)
+            except Exception:
+                pass
+            return BusEvent(
+                timestamp=ev["timestamp"],
+                node=node_name,
+                consumed=consumed,
+                emitted_types=ev["emitted"],
+                emitted_msgs=outs,
+                details=details,
+            )
 
         try:
-            for out, ev in bus.iter_run(context=ctx.variables):
-                ctx.record_bus_event(
-                    node=ev.get("node"),
-                    consumed=ev.get("consumed"),
-                    emitted=ev.get("emitted") or [],
-                    details=ev.get("details", ""),
-                )
-                try:
-                    self._log_event(ev, out)
-                except Exception:
-                    pass
-                yield BusEvent(
-                    timestamp=ev["timestamp"],
-                    node=ev["node"],
-                    consumed=ev["consumed"],
-                    emitted_types=ev["emitted"],
-                    emitted_msgs=out,
-                    details=ev.get("details", ""),
-                )
-        except StopIteration as stop:
-            emitted, _history = stop.value
-            return emitted, ctx
+            while queue and steps < self.max_steps:
+                msg = queue[0]
+                if not _due(msg):
+                    queue.rotate(-1)
+                    continue
+
+                msg = queue.popleft()
+                if msg.id in seen:
+                    continue
+                seen.add(msg.id)
+
+                targets = list(subs.get(msg.type, []))
+                if not targets:
+                    ev = _record_and_yield(None, msg.type, [], "no-subscriber")
+                    emitted_all.append(msg)
+                    steps += 1
+                    yield ev
+                    continue
+
+                for node_obj in targets:
+                    try:
+                        outs = node_obj.process(msg, ctx.variables) or []
+                        if isinstance(outs, Message):
+                            outs = [outs]
+                        elif not isinstance(outs, list) or not all(
+                            isinstance(x, Message) for x in outs
+                        ):
+                            raise TypeError(
+                                f"Node '{getattr(node_obj, 'name', 'unknown')}' "
+                                "must return Message, list[Message], or None."
+                            )
+                    except Exception as e:
+                        outs = [
+                            msg.child(
+                                type="error.v1",
+                                body={
+                                    "node": getattr(node_obj, "name", None),
+                                    "for": msg.type,
+                                    "error": str(e),
+                                },
+                            )
+                        ]
+
+                    outs = self._correlate(msg, outs)
+                    outs = self._merge_artifacts(outs, node_obj)
+                    for om in outs:
+                        queue.append(om)
+
+                    ev = _record_and_yield(getattr(node_obj, "name", None), msg.type, outs, "")
+                    emitted_all.extend(outs)
+                    steps += 1
+                    yield ev
+                    if steps >= self.max_steps:
+                        break
+        finally:
+            return emitted_all, ctx

@@ -53,8 +53,12 @@ def _ollama_schema_sanitize(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 class LLMInterface:
     def generate(
-        self, *, messages: List[Dict[str, Any]], response_model: Union[Type[BaseModel], BaseModel]
-    ) -> str:
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        response_model: Union[Type[BaseModel], BaseModel],
+        temperature: float | None = None,
+    ) -> BaseModel:
         raise NotImplementedError
 
 
@@ -65,18 +69,24 @@ class OllamaInterface(LLMInterface):
         self.model = model
         self.temperature = temperature
 
-    def _chat(self, messages: List[Dict[str, Any]], *, fmt: Any | None) -> str:
+    def _chat(
+        self, messages: List[Dict[str, Any]], *, fmt: Any | None, temperature: float | None
+    ) -> str:
         resp = chat(
             model=self.model,
             messages=messages,
-            options={"temperature": self.temperature},
+            options={"temperature": self.temperature if temperature is None else temperature},
             format=fmt,
         )
         return resp.get("message", {}).get("content", "")
 
     def generate(
-        self, *, messages: List[Dict[str, Any]], response_model: Union[Type[BaseModel], BaseModel]
-    ) -> str:
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        response_model: Union[Type[BaseModel], BaseModel],
+        temperature: float | None = None,
+    ) -> BaseModel:
         model_cls: Type[BaseModel] = (
             response_model
             if isinstance(response_model, type) and issubclass(response_model, BaseModel)
@@ -84,19 +94,16 @@ class OllamaInterface(LLMInterface):
         )
         full_schema = model_cls.model_json_schema()
         try:
-            content = self._chat(messages, fmt=full_schema)
-            model_cls.model_validate_json(content)
-            return content
+            content = self._chat(messages, fmt=full_schema, temperature=temperature)
+            return model_cls.model_validate_json(content)
         except (ValidationError, ResponseError):
             pass
         try:
             clean_schema = _ollama_schema_sanitize(full_schema)
-            content2 = self._chat(messages, fmt=clean_schema)
-            model_cls.model_validate_json(content2)
-            return content2
+            content2 = self._chat(messages, fmt=clean_schema, temperature=temperature)
+            return model_cls.model_validate_json(content2)
         except (ValidationError, ResponseError):
             pass
-
         messages2 = messages + [
             {
                 "role": "system",
@@ -106,7 +113,6 @@ class OllamaInterface(LLMInterface):
                 ),
             }
         ]
-        content3 = self._chat(messages2, fmt="json")
+        content3 = self._chat(messages2, fmt="json", temperature=temperature)
         content3 = re.sub(r"^```(?:json)?\s*|\s*```$", "", content3.strip())
-        model_cls.model_validate_json(content3)
-        return content3
+        return model_cls.model_validate_json(content3)

@@ -1,105 +1,23 @@
 # aigraph/api.py
 from __future__ import annotations
-
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from aigraph.core.nodes import Node
 from aigraph.core.graphs import graph_from_nodes
 from aigraph.core.runner import MessageRunner
 from aigraph.core.tools import ToolRegistry, FunctionTool, Tool
-from aigraph.interfaces.ollama import OllamaInterface, LLMInterface
 from aigraph.core.messages import Message
-
-from contextvars import ContextVar
-
-
-class _RunScope:
-    __slots__ = ("payload", "vars", "artifacts", "tool_registry", "app_cfg", "llm_iface")
-
-    def __init__(self) -> None:
-        self.payload: Any = None
-        self.vars: Dict[str, Any] = {}
-        self.artifacts: List[Dict[str, Any]] = []
-        self.tool_registry: Optional[ToolRegistry] = None
-        self.app_cfg: Optional["AppConfig"] = None
-        self.llm_iface: Optional[LLMInterface] = None
-
-
-_scope_var: ContextVar[_RunScope] = ContextVar("_aigraph_scope", default=_RunScope())
-
-
-def _scope() -> _RunScope:
-    return _scope_var.get()
-
-
-def data() -> Any:
-    return _scope().payload
-
-
-def set_data(value: Any) -> None:
-    _scope().payload = value
-
-
-def vars() -> Dict[str, Any]:
-    return _scope().vars
-
-
-def call_tool(*args, **kwargs):
-    if args and isinstance(args[0], str):
-        name = args[0]
-        payload = dict(kwargs)
-        reg = _scope().tool_registry
-        if not reg:
-            raise RuntimeError("No ToolRegistry available in this run scope.")
-        return reg.get(name).call(payload)
-    raise RuntimeError(
-        "Decorator-style @ag.tool is no longer supported. Use @app.tool on a specific App instance."
-    )
-
-
-def emit(artifact: Dict[str, Any]) -> None:
-    _scope().artifacts.append(artifact)
-
-
-def llm(
-    *,
-    model: Type[BaseModel],
-    prompt: str,
-    system: Optional[str] = None,
-    temperature: Optional[float] = None,
-) -> BaseModel:
-    sc = _scope()
-    if sc.app_cfg is None:
-        raise RuntimeError("Application config missing in scope; cannot call llm().")
-    if sc.llm_iface is None:
-        temp = sc.app_cfg.temperature if temperature is None else temperature
-        sc.llm_iface = OllamaInterface(model=sc.app_cfg.model, temperature=temp)
-
-    messages: List[Dict[str, str]] = []
-    messages.append(
-        {
-            "role": "system",
-            "content": "You are a precise JSON generator. Return ONLY valid JSON for the schema. No extra text, no code fences.",
-        }
-    )
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
-    raw = sc.llm_iface.generate(messages=messages, response_model=model)
-    try:
-        return model.model_validate_json(raw)
-    except ValidationError as e:
-        raise TypeError(f"LLM returned invalid JSON for {model.__name__}: {e}") from e
+from aigraph.core.context import Context
+from aigraph.interfaces.ollama import LLMInterface
 
 
 @dataclass
 class NodeDef:
-    func: Callable[[Message], Optional[Message | List[Message]]]
+    func: Callable[[Message, Context], Optional[Message | List[Message]]]
     name: str
     consumes: List[str] | None = None
     emits: List[str] | None = None
@@ -111,10 +29,10 @@ class AppConfig(BaseModel):
     temperature: float = 0.1
 
 
-def _ensure_single_param(fn: Callable, where: str):
+def _ensure_sig_msg_ctx(fn: Callable, where: str):
     sig = inspect.signature(fn)
-    if len(sig.parameters) != 1:
-        raise TypeError(f"{where} '{fn.__name__}' must accept exactly one argument (Message).")
+    if list(sig.parameters.keys()) != ["msg", "ctx"]:
+        raise TypeError(f"{where} '{fn.__name__}' must accept (msg: Message, ctx: Context).")
 
 
 class App:
@@ -123,19 +41,21 @@ class App:
         self._registry = ToolRegistry()
         self._compiled: Optional[Tuple[Any, Dict[str, Node]]] = None
         self._nodes: Dict[str, NodeDef] = {}
+        self._llm_iface: Optional[LLMInterface] = None
 
-    def _register_node(self, nd: NodeDef) -> None:
-        if nd.name in self._nodes:
-            raise RuntimeError(f"node '{nd.name}' already registered on app '{self.cfg.name}'.")
-        self._nodes[nd.name] = nd
-        self._compiled = None
+    def with_llm(self, llm_iface: LLMInterface) -> "App":
+        self._llm_iface = llm_iface
+        return self
 
     def node(
         self, name: str, *, consumes: Optional[List[str]] = None, emits: Optional[List[str]] = None
     ):
-        def _decorator(fn: Callable[[Message], Optional[Message | List[Message]]]) -> Callable:
-            _ensure_single_param(fn, "@node")
-            self._register_node(NodeDef(func=fn, name=name, consumes=consumes, emits=emits))
+        def _decorator(fn: Callable[[Message, Context], Optional[Message | List[Message]]]):
+            _ensure_sig_msg_ctx(fn, "@node")
+            if name in self._nodes:
+                raise RuntimeError(f"node '{name}' already registered on app '{self.cfg.name}'.")
+            self._nodes[name] = NodeDef(func=fn, name=name, consumes=consumes, emits=emits)
+            self._compiled = None
             return fn
 
         return _decorator
@@ -162,57 +82,47 @@ class App:
         if not self._nodes:
             raise RuntimeError("No nodes declared. Use @app.node('name').")
 
-        nodes: Dict[str, Node] = {}
-
         class _PyNode(Node):
             def __init__(
-                self, name, fn, *, cfg: AppConfig, tools: ToolRegistry, consumes_hint, emits_hint
+                self,
+                name,
+                fn,
+                *,
+                cfg: AppConfig,
+                tools: ToolRegistry,
+                llm: Optional[LLMInterface],
+                consumes_hint,
+                emits_hint,
             ):
                 consumes = list(consumes_hint or [name])
                 super().__init__(name, consumes=consumes, emits=list(emits_hint or []))
                 self._fn = fn
-                self.cfg = cfg
-                self.tools = tools
+                from aigraph.core.context import Context, Inventory
 
-            def _normalize_out(self, rv: Any) -> List[Message]:
-                if rv is None:
+                self.ctx = Context(
+                    run_vars={}, inventory=Inventory(), tools=tools, llm=llm, cfg=cfg
+                )
+
+            def process(self, msg: Message, run_vars: Dict[str, Any]) -> List[Message]:
+                self.ctx.run_vars = run_vars
+                self.ctx.artifacts.clear()
+                out = self._fn(msg, self.ctx)
+                if out is None:
                     return []
-                if isinstance(rv, Message):
-                    outs = [rv]
-                elif isinstance(rv, list) and all(isinstance(x, Message) for x in rv):
-                    outs = rv
-                else:
-                    raise TypeError(
-                        f"Node '{self.name}' must return Message, list[Message], or None."
-                    )
+                if isinstance(out, Message):
+                    return [out]
+                if isinstance(out, list) and all(isinstance(x, Message) for x in out):
+                    return out
+                raise TypeError(f"Node '{self.name}' must return Message, list[Message], or None.")
 
-                sc = _scope()
-                normed: List[Message] = []
-                for m in outs:
-                    headers = dict(getattr(m, "headers", {}) or {})
-                    if sc.artifacts:
-                        prev = headers.get("artifacts", [])
-                        headers["artifacts"] = list(prev) + list(sc.artifacts)
-                    normed.append(Message(type=m.type, body=m.body, headers=headers))
-                return normed
-
-            def process(self, msg: Message, context: Dict[str, Any]) -> List[Message]:
-                sc = _scope()
-                sc.payload = msg.body
-                sc.vars = context
-                sc.tool_registry = self.tools
-                sc.app_cfg = self.cfg
-                sc.artifacts = []
-
-                rv = self._fn(msg)
-                return self._normalize_out(rv)
-
+        nodes: Dict[str, Node] = {}
         for name, nd in self._nodes.items():
             nodes[name] = _PyNode(
                 name,
                 nd.func,
                 cfg=self.cfg,
                 tools=self._registry,
+                llm=self._llm_iface,
                 consumes_hint=nd.consumes,
                 emits_hint=nd.emits,
             )
@@ -230,38 +140,15 @@ class App:
         self._compiled = (G, nodes)
         return self._compiled
 
-    def run(
-        self,
-        initial_payload: Any | List[Any] | None = None,
-        *,
-        seed_types: List[str] | None = None,
-    ):
-        G, _ = self._compiled or self._compile()
-        runner = MessageRunner(G, max_steps=64)
-
-        seeds = self._build_seeds(initial_payload, seed_types)
-        return runner.run(seeds)
-
-    def run_iter(
-        self,
-        initial_payload: Any | List[Any] | None = None,
-        *,
-        seed_types: List[str] | None = None,
-    ):
-        G, _ = self._compiled or self._compile()
-        runner = MessageRunner(G, max_steps=64)
-
-        seeds = self._build_seeds(initial_payload, seed_types)
-        return runner.run_iter(seeds)
-
     def _build_seeds(
         self, initial_payload: Any | List[Any] | None, seed_types: List[str] | None
     ) -> List[Message]:
+        if initial_payload is None:
+            return []
+
         def default_seed_type() -> str:
             return next(iter(self._nodes.keys()))
 
-        if initial_payload is None:
-            return []
         if isinstance(initial_payload, list):
             if seed_types and len(seed_types) == len(initial_payload):
                 return [Message(type=t, body=b) for t, b in zip(seed_types, initial_payload)]
@@ -269,6 +156,22 @@ class App:
             return [Message(type=t, body=b) for b in initial_payload]
         t = seed_types[0] if seed_types else default_seed_type()
         return [Message(type=t, body=initial_payload)]
+
+    def run(
+        self, initial_payload: Any | List[Any] | None = None, *, seed_types: List[str] | None = None
+    ):
+        G, _ = self._compiled or self._compile()
+        runner = MessageRunner(G, max_steps=64)
+        seeds = self._build_seeds(initial_payload, seed_types)
+        return runner.run(seeds)
+
+    def run_iter(
+        self, initial_payload: Any | List[Any] | None = None, *, seed_types: List[str] | None = None
+    ):
+        G, _ = self._compiled or self._compile()
+        runner = MessageRunner(G, max_steps=64)
+        seeds = self._build_seeds(initial_payload, seed_types)
+        return runner.run_iter(seeds)
 
     def graph(self):
         G, _ = self._compiled or self._compile()
@@ -304,4 +207,4 @@ class _GraphView:
         return self.G
 
 
-__all__ = ["data", "vars", "call_tool", "emit", "llm", "App", "AppConfig", "Message"]
+__all__ = ["App", "AppConfig", "Message"]
