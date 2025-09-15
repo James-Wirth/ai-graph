@@ -53,6 +53,24 @@ class MessageRunner:
         self.max_steps = max_steps
         self.logger = logging.getLogger("aigraph.runner")
 
+    def _log_event(self, ev: Dict[str, Any], outs: List[Message]) -> None:
+        self.logger.debug(
+            "[%s] %s :: %s -> %s",
+            ev.get("timestamp"),
+            ev.get("node") or "NO-NODE",
+            ev.get("consumed"),
+            ",".join(ev.get("emitted") or []),
+        )
+        for m in outs:
+            corr = m.headers.get("correlation_id", m.id)
+            self.logger.debug(
+                "  emitted %s id=%s corr=%s parent=%s",
+                m.type,
+                m.id,
+                corr,
+                m.headers.get("parent_id"),
+            )
+
     def run(self, initial_messages: List[Message]) -> Tuple[List[Message], ExecutionContext]:
         ctx = ExecutionContext()
         bus = MessageBus(max_steps=self.max_steps)
@@ -74,6 +92,10 @@ class MessageRunner:
                 emitted=ev.get("emitted") or [],
                 details=ev.get("details", ""),
             )
+            try:
+                self._log_event(ev, [])
+            except Exception:
+                pass
         return emitted, ctx
 
     def run_iter(
@@ -99,6 +121,10 @@ class MessageRunner:
                     emitted=ev.get("emitted") or [],
                     details=ev.get("details", ""),
                 )
+                try:
+                    self._log_event(ev, out)
+                except Exception:
+                    pass
                 yield BusEvent(
                     timestamp=ev["timestamp"],
                     node=ev["node"],
