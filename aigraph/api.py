@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from aigraph.core.nodes import Node
 from aigraph.core.graphs import graph_from_nodes
 from aigraph.core.runner import MessageRunner
-from aigraph.core.tools import ToolRegistry, FunctionTool
+from aigraph.core.tools import ToolRegistry, FunctionTool, Tool
 from aigraph.interfaces.ollama import OllamaInterface, LLMInterface
 from aigraph.core.messages import Message
 
@@ -48,7 +48,7 @@ def vars() -> Dict[str, Any]:
     return _scope().vars
 
 
-def tool(*args, **kwargs):
+def call_tool(*args, **kwargs):
     if args and isinstance(args[0], str):
         name = args[0]
         payload = dict(kwargs)
@@ -155,9 +155,8 @@ class App:
 
         return _wrap if fn is None else _wrap(fn)
 
-    def register_tool(self, tool: FunctionTool) -> None:
+    def register_tool(self, tool: Tool) -> None:
         self._registry.register(tool)
-        self._compiled = None
 
     def _compile(self):
         if not self._nodes:
@@ -175,7 +174,7 @@ class App:
                 self.cfg = cfg
                 self.tools = tools
 
-            def _normalize_out(self, rv: Any, *, parent: Message) -> List[Message]:
+            def _normalize_out(self, rv: Any) -> List[Message]:
                 if rv is None:
                     return []
                 if isinstance(rv, Message):
@@ -190,16 +189,11 @@ class App:
                 sc = _scope()
                 normed: List[Message] = []
                 for m in outs:
-                    body = (
-                        m.body.model_dump()
-                        if isinstance(getattr(m, "body", None), BaseModel)
-                        else m.body
-                    )
                     headers = dict(getattr(m, "headers", {}) or {})
                     if sc.artifacts:
                         prev = headers.get("artifacts", [])
                         headers["artifacts"] = list(prev) + list(sc.artifacts)
-                    normed.append(Message(type=m.type, body=body, headers=headers))
+                    normed.append(Message(type=m.type, body=m.body, headers=headers))
                 return normed
 
             def process(self, msg: Message, context: Dict[str, Any]) -> List[Message]:
@@ -211,7 +205,7 @@ class App:
                 sc.artifacts = []
 
                 rv = self._fn(msg)
-                return self._normalize_out(rv, parent=msg)
+                return self._normalize_out(rv)
 
         for name, nd in self._nodes.items():
             nodes[name] = _PyNode(
@@ -227,8 +221,6 @@ class App:
 
         for name, n in nodes.items():
             if name in G.nodes:
-                G.nodes[name]["kind"] = "node"
-                G.nodes[name]["node"] = n
                 G.nodes[name]["node_def"] = self._nodes[name]
                 G.nodes[name]["consumes"] = list(getattr(n, "consumes", []))
                 G.nodes[name]["emits"] = list(getattr(n, "emits", []))
@@ -242,28 +234,11 @@ class App:
         *,
         seed_types: List[str] | None = None,
     ):
-        G, nodes = self._compiled or self._compile()
+        G, _ = self._compiled or self._compile()
         runner = MessageRunner(G, max_steps=64)
 
-        seeds: List[Message] = []
-
-        def default_seed_type() -> str:
-            return next(iter(self._nodes.keys()))
-
-        if initial_payload is None:
-            seeds = []
-        elif isinstance(initial_payload, list):
-            if seed_types and len(seed_types) == len(initial_payload):
-                seeds = [Message(type=t, body=b) for t, b in zip(seed_types, initial_payload)]
-            else:
-                t = seed_types[0] if seed_types else default_seed_type()
-                seeds = [Message(type=t, body=b) for b in initial_payload]
-        else:
-            t = seed_types[0] if seed_types else default_seed_type()
-            seeds = [Message(type=t, body=initial_payload)]
-
-        out, ctx = runner.run(seeds)
-        return out, ctx
+        seeds = self._build_seeds(initial_payload, seed_types)
+        return runner.run(seeds)
 
     def run_iter(
         self,
@@ -274,24 +249,24 @@ class App:
         G, _ = self._compiled or self._compile()
         runner = MessageRunner(G, max_steps=64)
 
-        seeds: List[Message] = []
+        seeds = self._build_seeds(initial_payload, seed_types)
+        return runner.run_iter(seeds)
 
+    def _build_seeds(
+        self, initial_payload: Any | List[Any] | None, seed_types: List[str] | None
+    ) -> List[Message]:
         def default_seed_type() -> str:
             return next(iter(self._nodes.keys()))
 
         if initial_payload is None:
-            seeds = []
-        elif isinstance(initial_payload, list):
+            return []
+        if isinstance(initial_payload, list):
             if seed_types and len(seed_types) == len(initial_payload):
-                seeds = [Message(type=t, body=b) for t, b in zip(seed_types, initial_payload)]
-            else:
-                t = seed_types[0] if seed_types else default_seed_type()
-                seeds = [Message(type=t, body=b) for b in initial_payload]
-        else:
+                return [Message(type=t, body=b) for t, b in zip(seed_types, initial_payload)]
             t = seed_types[0] if seed_types else default_seed_type()
-            seeds = [Message(type=t, body=initial_payload)]
-
-        return runner.run_iter(seeds)
+            return [Message(type=t, body=b) for b in initial_payload]
+        t = seed_types[0] if seed_types else default_seed_type()
+        return [Message(type=t, body=initial_payload)]
 
     def graph(self):
         G, _ = self._compiled or self._compile()
@@ -327,4 +302,4 @@ class _GraphView:
         return self.G
 
 
-__all__ = ["data", "vars", "tool", "emit", "llm", "App", "AppConfig", "Message"]
+__all__ = ["data", "vars", "call_tool", "emit", "llm", "App", "AppConfig", "Message"]

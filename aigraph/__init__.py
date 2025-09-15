@@ -1,9 +1,9 @@
-from .api import data, vars, tool, emit, llm, App, AppConfig, Message
+from .api import data, vars, call_tool, emit, llm, App, AppConfig, Message
 
 __all__ = [
     "data",
     "vars",
-    "tool",
+    "call_tool",
     "emit",
     "llm",
     "App",
