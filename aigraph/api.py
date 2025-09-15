@@ -2,7 +2,7 @@
 from __future__ import annotations
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -11,7 +11,7 @@ from aigraph.core.graphs import graph_from_nodes
 from aigraph.core.runner import MessageRunner
 from aigraph.core.tools import ToolRegistry, FunctionTool, Tool
 from aigraph.core.messages import Message
-from aigraph.core.context import Context
+from aigraph.core.context import Context, Inventory
 from aigraph.interfaces.ollama import LLMInterface
 
 
@@ -39,7 +39,7 @@ class App:
     def __init__(self, **kwargs) -> None:
         self.cfg = AppConfig(**kwargs)
         self._registry = ToolRegistry()
-        self._compiled: Optional[Tuple[Any, Dict[str, Node]]] = None
+        self._compiled_graph: Optional[Any] = None
         self._nodes: Dict[str, NodeDef] = {}
         self._llm_iface: Optional[LLMInterface] = None
 
@@ -55,7 +55,7 @@ class App:
             if name in self._nodes:
                 raise RuntimeError(f"node '{name}' already registered on app '{self.cfg.name}'.")
             self._nodes[name] = NodeDef(func=fn, name=name, consumes=consumes, emits=emits)
-            self._compiled = None
+            self._compiled_graph = None
             return fn
 
         return _decorator
@@ -70,7 +70,7 @@ class App:
         def _wrap(f: Callable):
             ft = FunctionTool(f, name=name, description=description)
             self._registry.register(ft)
-            self._compiled = None
+            self._compiled_graph = None
             return f
 
         return _wrap if fn is None else _wrap(fn)
@@ -97,8 +97,6 @@ class App:
                 consumes = list(consumes_hint or [name])
                 super().__init__(name, consumes=consumes, emits=list(emits_hint or []))
                 self._fn = fn
-                from aigraph.core.context import Context, Inventory
-
                 self.ctx = Context(
                     run_vars={}, inventory=Inventory(), tools=tools, llm=llm, cfg=cfg
                 )
@@ -137,8 +135,8 @@ class App:
                 G.nodes[name]["consumes"] = list(getattr(n, "consumes", []))
                 G.nodes[name]["emits"] = list(getattr(n, "emits", []))
 
-        self._compiled = (G, nodes)
-        return self._compiled
+        self._compiled_graph = G
+        return G
 
     def _build_seeds(
         self, initial_payload: Any | List[Any] | None, seed_types: List[str] | None
@@ -160,7 +158,7 @@ class App:
     def run(
         self, initial_payload: Any | List[Any] | None = None, *, seed_types: List[str] | None = None
     ):
-        G, _ = self._compiled or self._compile()
+        G = self._compiled_graph or self._compile()
         runner = MessageRunner(G, max_steps=64)
         seeds = self._build_seeds(initial_payload, seed_types)
         return runner.run(seeds)
@@ -168,19 +166,18 @@ class App:
     def run_iter(
         self, initial_payload: Any | List[Any] | None = None, *, seed_types: List[str] | None = None
     ):
-        G, _ = self._compiled or self._compile()
+        G = self._compiled_graph or self._compile()
         runner = MessageRunner(G, max_steps=64)
         seeds = self._build_seeds(initial_payload, seed_types)
         return runner.run_iter(seeds)
 
     def graph(self):
-        G, _ = self._compiled or self._compile()
-        return _GraphView(G)
+        return self._compiled_graph or self._compile()
 
     def viz(self, *, history: Optional[List[Dict[str, Any]]] = None, observed_only: bool = False):
         from aigraph.core.viz import render_workflow_graph
 
-        G, _ = self._compiled or self._compile()
+        G = self._compiled_graph or self._compile()
         fig, _ = render_workflow_graph(G, history=history, observed_only=observed_only)
 
         class _Saver:
@@ -195,16 +192,8 @@ class App:
     ) -> str:
         from aigraph.core.viz import mermaid_from_graph
 
-        G, _ = self._compiled or self._compile()
+        G = self._compiled_graph or self._compile()
         return mermaid_from_graph(G, history=history, observed_only=observed_only)
-
-
-class _GraphView:
-    def __init__(self, G: Any) -> None:
-        self.G = G
-
-    def show(self) -> Any:
-        return self.G
 
 
 __all__ = ["App", "AppConfig", "Message"]
