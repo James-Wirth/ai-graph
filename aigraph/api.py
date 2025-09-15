@@ -179,7 +179,7 @@ class App:
                     return []
                 if isinstance(rv, Message):
                     outs = [rv]
-                elif isinstance(rv, list) and (not rv or isinstance(rv[0], Message)):
+                elif isinstance(rv, list) and all(isinstance(x, Message) for x in rv):
                     outs = rv
                 else:
                     raise TypeError(
