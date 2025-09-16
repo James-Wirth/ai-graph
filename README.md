@@ -6,7 +6,9 @@
 
 Nodes are decorated python functions that consume/emit typed messages (via Pydantic models), making it easy to build complex workflows (e.g. branching, loops, fan-ins/outs). The LLM interfaces, inventory, tools, artifacts (etc.) are carried around by an explicit context.
 
-![Example graph (a travel agent)](image.png)
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/8dae2ebd-8742-44ec-858a-553067c6a6b8" width="500" />
+</p>
 
 ## Usage
 
