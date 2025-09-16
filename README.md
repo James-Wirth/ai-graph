@@ -50,6 +50,6 @@ def bob(msg: Message, ctx: Context) -> Message:
 Run the graph by specifying the initial payload and the seed node:
 
 ```python
-initial_payload = InputFormat(question="What's the meaning of life?")
+initial_payload = AliceIn(question="What's the meaning of life?")
 emitted, ctx_run = app.run(initial_payload, seed_type=["alice"])
 ```
