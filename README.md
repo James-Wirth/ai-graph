@@ -36,14 +36,18 @@ app = ag.App(name="example")
 class AliceIn(BaseModel): question: str
 class AliceOut(BaseModel): answer: str
 
-@app.node("alice", emits=["bob"])
-def alice(msg: Message, ctx: Context) -> Message:
+@app.node("alice", emits=["bob", ...])
+def alice(msg: Message, ctx: Context) -> List[Message]:
     _in = AliceIn.model_validate(msg.body)
     _out_ = ctx.structured(model=AliceOut, prompt=f"Answer briefly: {_in.question}")
-    return Message(type="bob", body=_out)
+    
+    return [
+      Message(type="bob", body=_out),
+      ...
+    ]
 
 @app.node("bob", emits=...)
-def bob(msg: Message, ctx: Context) -> Message:
+def bob(msg: Message, ctx: Context) -> List[Message]:
     ...
 ```
 
