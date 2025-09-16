@@ -1,4 +1,4 @@
-# aiGraph
+<img width="200" alt="image" src="https://github.com/user-attachments/assets/43b3992e-ee0f-4c98-ada9-b2a3d287a969" />
 
 [![status: active development](https://img.shields.io/badge/status-active--development-orange)]()
 
