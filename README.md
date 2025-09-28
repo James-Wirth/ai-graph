@@ -66,6 +66,6 @@ app = App(name="app")
 app.include_blueprint(my_blueprint)
 
 initial_payload = AliceIn(question="What's the meaning of life?")
-emitted, ctx_run = app.run(initial_payload, seed_type=["alice"])
+emitted, ctx_run = app.run(initial_payload, seed_type=["my_blueprint:alice"])
 print("Final emitted types:", [m.type for m in emitted])
 ```
