@@ -1,7 +1,8 @@
-from .api import App, AppConfig, Message
+from .api import App, Blueprint, AppConfig, Message
 
 __all__ = [
     "App",
+    "Blueprint",
     "AppConfig",
     "Message",
 ]

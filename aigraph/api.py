@@ -35,6 +35,49 @@ def _ensure_sig_msg_ctx(fn: Callable, where: str):
         raise TypeError(f"{where} '{fn.__name__}' must accept (msg: Message, ctx: Context).")
 
 
+class Blueprint:
+    def __init__(self, *, name: str | None = None, prefix: str = "") -> None:
+        self.name = name or "blueprint"
+        self.prefix = prefix.rstrip(":")
+        self._nodes: Dict[str, Dict[str, Any]] = {}
+        self._tools: List[Any] = []
+
+    def node(
+        self,
+        name: str,
+        *,
+        consumes: Optional[List[str]] = None,
+        emits: Optional[List[str]] = None,
+    ):
+        def _decorator(fn: Callable[[Message, Context], Optional[Message | List[Message]]]):
+            nodename = f"{self.prefix}:{name}" if self.prefix else name
+            if nodename in self._nodes:
+                raise RuntimeError(
+                    f"node '{nodename}' already registered on blueprint '{self.name}'."
+                )
+            self._nodes[nodename] = dict(func=fn, name=nodename, consumes=consumes, emits=emits)
+            return fn
+
+        return _decorator
+
+    def tool(
+        self,
+        fn: Optional[Callable] = None,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ):
+        def _wrap(f: Callable):
+            ft = FunctionTool(f, name=name, description=description)
+            self._tools.append(ft)
+            return f
+
+        return _wrap if fn is None else _wrap(fn)
+
+    def __export__(self):
+        return self._nodes, self._tools
+
+
 class App:
     def __init__(self, **kwargs) -> None:
         self.cfg = AppConfig(**kwargs)
@@ -195,5 +238,25 @@ class App:
         G = self._compiled_graph or self._compile()
         return mermaid_from_graph(G, history=history, observed_only=observed_only)
 
+    def include_blueprint(self, module: Any) -> "App":
+        if not hasattr(module, "__export__"):
+            raise TypeError("include_blueprint expects an object with __export__().")
+        nodes_meta, tools = module.__export__()
 
-__all__ = ["App", "AppConfig", "Message"]
+        for t in tools:
+            self._registry.register(t)
+
+        for name, meta in nodes_meta.items():
+            if name in self._nodes:
+                raise RuntimeError(f"node '{name}' already registered on app '{self.cfg.name}'.")
+            self._nodes[name] = NodeDef(
+                func=meta["func"],
+                name=meta["name"],
+                consumes=meta.get("consumes"),
+                emits=meta.get("emits"),
+            )
+        self._compiled_graph = None
+        return self
+
+
+__all__ = ["App", "Blueprint", "AppConfig", "Message"]
