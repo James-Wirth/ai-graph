@@ -46,7 +46,7 @@ def alice(msg: Message, ctx: Context) -> List[Message]:
     _out_ = ctx.structured(model=AliceOut, prompt=f"Answer briefly: {_in.question}")
     
     return [
-      Message(type="bob", body=_out),
+      Message(type="my_blueprint:bob", body=_out),
       ...
     ]
 
