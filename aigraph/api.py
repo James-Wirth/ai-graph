@@ -1,6 +1,5 @@
 # aigraph/api.py
 from __future__ import annotations
-import inspect
 import networkx as nx
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -28,17 +27,11 @@ class AppConfig(BaseModel):
     temperature: float = 0.1
 
 
-def _ensure_sig_msg_ctx(fn: Callable, where: str):
-    sig = inspect.signature(fn)
-    if list(sig.parameters.keys()) != ["msg", "ctx"]:
-        raise TypeError(f"{where} '{fn.__name__}' must accept (msg: Message, ctx: Context).")
-
-
 class Blueprint:
     def __init__(self, *, name: str | None = None, prefix: str = "") -> None:
         self.name = name or "blueprint"
         self.prefix = prefix.rstrip(":")
-        self._nodes: Dict[str, Dict[str, Any]] = {}
+        self._nodes: Dict[str, NodeDef] = {}
 
     def node(
         self,
@@ -53,7 +46,7 @@ class Blueprint:
                 raise RuntimeError(
                     f"node '{nodename}' already registered on blueprint '{self.name}'."
                 )
-            self._nodes[nodename] = dict(func=fn, name=nodename, consumes=consumes, emits=emits)
+            self._nodes[nodename] = NodeDef(func=fn, name=nodename, consumes=consumes, emits=emits)
             return fn
 
         return _decorator
@@ -77,7 +70,6 @@ class App:
         self, name: str, *, consumes: Optional[List[str]] = None, emits: Optional[List[str]] = None
     ):
         def _decorator(fn: Callable[[Message, Context], Optional[Message | List[Message]]]):
-            _ensure_sig_msg_ctx(fn, "@node")
             if name in self._nodes:
                 raise RuntimeError(f"node '{name}' already registered on app '{self.cfg.name}'.")
             self._nodes[name] = NodeDef(func=fn, name=name, consumes=consumes, emits=emits)
@@ -98,11 +90,12 @@ class App:
                 *,
                 cfg: AppConfig,
                 llm: Optional[LLMInterface],
-                consumes_hint,
-                emits_hint,
+                consumes: Optional[List[str]],
+                emits: Optional[List[str]],
             ):
-                consumes = list(consumes_hint or [name])
-                super().__init__(name, consumes=consumes, emits=list(emits_hint or []))
+                consumes_list = list(consumes or [name])
+                emits_list = list(emits or [])
+                super().__init__(name, consumes=consumes_list, emits=emits_list)
                 self._fn = fn
                 self.ctx = Context(run_vars={}, llm=llm, cfg=cfg)
 
@@ -118,33 +111,32 @@ class App:
                 raise TypeError(f"Node '{self.name}' must return Message, list[Message], or None.")
 
         nodes: Dict[str, Node] = {}
-        for name, nd in self._nodes.items():
+        for name, n in self._nodes.items():
             nodes[name] = _PyNode(
                 name,
-                nd.func,
+                n.func,
                 cfg=self.cfg,
                 llm=self._llm_iface,
-                consumes_hint=nd.consumes,
-                emits_hint=nd.emits,
+                consumes=n.consumes,
+                emits=n.emits,
             )
 
         G = nx.DiGraph()
         for n in nodes.values():
-            G.add_node(n.name, kind="node", node=n)
+            G.add_node(
+                n.name,
+                kind="node",
+                node=n,
+                node_def=self._nodes[n.name],
+                consumes=n.consumes,
+                emits=n.emits,
+            )
             for t in n.consumes:
                 G.add_node(t, kind="msg")
                 G.add_edge(t, n.name)
             for t in n.emits:
                 G.add_node(t, kind="msg")
                 G.add_edge(n.name, t)
-
-        for name, n in nodes.items():
-            if name in G.nodes:
-                G.nodes[name]["kind"] = "node"
-                G.nodes[name]["node"] = n
-                G.nodes[name]["node_def"] = self._nodes[name]
-                G.nodes[name]["consumes"] = list(getattr(n, "consumes", []))
-                G.nodes[name]["emits"] = list(getattr(n, "emits", []))
 
         self._compiled_graph = G
         return G
@@ -155,16 +147,16 @@ class App:
         if initial_payload is None:
             return []
 
-        def default_send_to() -> str:
-            return next(iter(self._nodes.keys()))
+        default_target = next(iter(self._nodes.keys()))
 
         if isinstance(initial_payload, list):
             if send_to and len(send_to) == len(initial_payload):
                 return [Message(send_to=t, body=b) for t, b in zip(send_to, initial_payload)]
-            t = send_to[0] if send_to else default_send_to()
-            return [Message(send_to=t, body=b) for b in initial_payload]
-        t = send_to[0] if send_to else default_send_to()
-        return [Message(send_to=t, body=initial_payload)]
+            target = send_to[0] if send_to else default_target
+            return [Message(send_to=target, body=b) for b in initial_payload]
+
+        target = send_to[0] if send_to else default_target
+        return [Message(send_to=target, body=initial_payload)]
 
     def run(
         self, initial_payload: Any | List[Any] | None = None, *, send_to: List[str] | None = None
@@ -185,18 +177,22 @@ class App:
     def graph(self):
         return self._compiled_graph or self._compile()
 
-    def viz(self, *, history: Optional[List[Dict[str, Any]]] = None, observed_only: bool = False):
+    def viz(
+        self,
+        *,
+        history: Optional[List[Dict[str, Any]]] = None,
+        observed_only: bool = False,
+        save_path: Optional[str] = None,
+    ):
         from aigraph.core.viz import render_workflow_graph
 
         G = self._compiled_graph or self._compile()
         fig, _ = render_workflow_graph(G, history=history, observed_only=observed_only)
 
-        class _Saver:
-            def save(self, path: str) -> str:
-                fig.savefig(path, bbox_inches="tight")
-                return path
-
-        return _Saver()
+        if save_path:
+            fig.savefig(save_path, bbox_inches="tight")
+            return save_path
+        return fig
 
     def mermaid(
         self, *, history: Optional[List[Dict[str, Any]]] = None, observed_only: bool = True
@@ -209,17 +205,13 @@ class App:
     def include_blueprint(self, module: Any) -> "App":
         if not hasattr(module, "__export__"):
             raise TypeError("include_blueprint expects an object with __export__().")
-        nodes_meta = module.__export__()
+        blueprint_nodes = module.__export__()
 
-        for name, meta in nodes_meta.items():
+        for name, node_def in blueprint_nodes.items():
             if name in self._nodes:
                 raise RuntimeError(f"node '{name}' already registered on app '{self.cfg.name}'.")
-            self._nodes[name] = NodeDef(
-                func=meta["func"],
-                name=meta["name"],
-                consumes=meta.get("consumes"),
-                emits=meta.get("emits"),
-            )
+            self._nodes[name] = node_def
+
         self._compiled_graph = None
         return self
 
