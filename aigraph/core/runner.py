@@ -75,7 +75,7 @@ class MessageRunner:
             corr = m.headers.get("correlation_id", m.id)
             self.logger.debug(
                 "  emitted %s id=%s corr=%s parent=%s",
-                m.type,
+                m.send_to,
                 m.id,
                 corr,
                 m.headers.get("parent_id"),
@@ -133,7 +133,7 @@ class MessageRunner:
                 "timestamp": dt.datetime.now(dt.UTC).isoformat(),
                 "node": node_name,
                 "consumed": consumed,
-                "emitted": [m.type for m in outs],
+                "emitted": [m.send_to for m in outs],
                 "details": details,
             }
             ctx.record_event(
@@ -164,9 +164,9 @@ class MessageRunner:
                     continue
                 seen.add(msg.id)
 
-                targets = list(subs.get(msg.type, []))
+                targets = list(subs.get(msg.send_to, []))
                 if not targets:
-                    ev = _record_and_yield(None, msg.type, [], "no-subscriber")
+                    ev = _record_and_yield(None, msg.send_to, [], "no-subscriber")
                     emitted_all.append(msg)
                     steps += 1
                     yield ev
@@ -187,10 +187,10 @@ class MessageRunner:
                     except Exception as e:
                         outs = [
                             msg.child(
-                                type="error.v1",
+                                send_to="error.v1",
                                 body={
                                     "node": getattr(node_obj, "name", None),
-                                    "for": msg.type,
+                                    "for": msg.send_to,
                                     "error": str(e),
                                 },
                             )
@@ -200,7 +200,7 @@ class MessageRunner:
                     for om in outs:
                         queue.append(om)
 
-                    ev = _record_and_yield(getattr(node_obj, "name", None), msg.type, outs, "")
+                    ev = _record_and_yield(getattr(node_obj, "name", None), msg.send_to, outs, "")
                     emitted_all.extend(outs)
                     steps += 1
                     yield ev

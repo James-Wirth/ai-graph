@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class Message(BaseModel):
-    type: str
+    send_to: str
     body: Any
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     ts: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
@@ -18,10 +18,10 @@ class Message(BaseModel):
         new.headers.update(kv)
         return new
 
-    def child(self, *, type: str, body: Any, **extra_headers) -> "Message":
+    def child(self, *, send_to: str, body: Any, **extra_headers) -> "Message":
         corr = self.headers.get("correlation_id", self.id)
         return Message(
-            type=type,
+            send_to=send_to,
             body=body,
             headers={
                 "correlation_id": corr,

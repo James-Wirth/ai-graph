@@ -149,38 +149,38 @@ class App:
         self._compiled_graph = G
         return G
 
-    def _build_seeds(
-        self, initial_payload: Any | List[Any] | None, seed_types: List[str] | None
+    def _build_initial_messages(
+        self, initial_payload: Any | List[Any] | None, send_to: List[str] | None
     ) -> List[Message]:
         if initial_payload is None:
             return []
 
-        def default_seed_type() -> str:
+        def default_send_to() -> str:
             return next(iter(self._nodes.keys()))
 
         if isinstance(initial_payload, list):
-            if seed_types and len(seed_types) == len(initial_payload):
-                return [Message(type=t, body=b) for t, b in zip(seed_types, initial_payload)]
-            t = seed_types[0] if seed_types else default_seed_type()
-            return [Message(type=t, body=b) for b in initial_payload]
-        t = seed_types[0] if seed_types else default_seed_type()
-        return [Message(type=t, body=initial_payload)]
+            if send_to and len(send_to) == len(initial_payload):
+                return [Message(send_to=t, body=b) for t, b in zip(send_to, initial_payload)]
+            t = send_to[0] if send_to else default_send_to()
+            return [Message(send_to=t, body=b) for b in initial_payload]
+        t = send_to[0] if send_to else default_send_to()
+        return [Message(send_to=t, body=initial_payload)]
 
     def run(
-        self, initial_payload: Any | List[Any] | None = None, *, seed_types: List[str] | None = None
+        self, initial_payload: Any | List[Any] | None = None, *, send_to: List[str] | None = None
     ):
         G = self._compiled_graph or self._compile()
         runner = MessageRunner(G, max_steps=64)
-        seeds = self._build_seeds(initial_payload, seed_types)
-        return runner.run(seeds)
+        initial_messages = self._build_initial_messages(initial_payload, send_to)
+        return runner.run(initial_messages)
 
     def run_iter(
-        self, initial_payload: Any | List[Any] | None = None, *, seed_types: List[str] | None = None
+        self, initial_payload: Any | List[Any] | None = None, *, send_to: List[str] | None = None
     ):
         G = self._compiled_graph or self._compile()
         runner = MessageRunner(G, max_steps=64)
-        seeds = self._build_seeds(initial_payload, seed_types)
-        return runner.run_iter(seeds)
+        initial_messages = self._build_initial_messages(initial_payload, send_to)
+        return runner.run_iter(initial_messages)
 
     def graph(self):
         return self._compiled_graph or self._compile()
