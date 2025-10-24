@@ -1,17 +1,16 @@
 # aigraph/api.py
 from __future__ import annotations
 import inspect
+import networkx as nx
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel
 
 from aigraph.core.nodes import Node
-from aigraph.core.graphs import graph_from_nodes
 from aigraph.core.runner import MessageRunner
-from aigraph.core.tools import ToolRegistry, FunctionTool, Tool
 from aigraph.core.messages import Message
-from aigraph.core.context import Context, Inventory
+from aigraph.core.context import Context
 from aigraph.interfaces.ollama import LLMInterface
 
 
@@ -40,7 +39,6 @@ class Blueprint:
         self.name = name or "blueprint"
         self.prefix = prefix.rstrip(":")
         self._nodes: Dict[str, Dict[str, Any]] = {}
-        self._tools: List[Any] = []
 
     def node(
         self,
@@ -60,28 +58,13 @@ class Blueprint:
 
         return _decorator
 
-    def tool(
-        self,
-        fn: Optional[Callable] = None,
-        *,
-        name: str | None = None,
-        description: str | None = None,
-    ):
-        def _wrap(f: Callable):
-            ft = FunctionTool(f, name=name, description=description)
-            self._tools.append(ft)
-            return f
-
-        return _wrap if fn is None else _wrap(fn)
-
     def __export__(self):
-        return self._nodes, self._tools
+        return self._nodes
 
 
 class App:
     def __init__(self, **kwargs) -> None:
         self.cfg = AppConfig(**kwargs)
-        self._registry = ToolRegistry()
         self._compiled_graph: Optional[Any] = None
         self._nodes: Dict[str, NodeDef] = {}
         self._llm_iface: Optional[LLMInterface] = None
@@ -103,24 +86,6 @@ class App:
 
         return _decorator
 
-    def tool(
-        self,
-        fn: Optional[Callable] = None,
-        *,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-    ):
-        def _wrap(f: Callable):
-            ft = FunctionTool(f, name=name, description=description)
-            self._registry.register(ft)
-            self._compiled_graph = None
-            return f
-
-        return _wrap if fn is None else _wrap(fn)
-
-    def register_tool(self, tool: Tool) -> None:
-        self._registry.register(tool)
-
     def _compile(self):
         if not self._nodes:
             raise RuntimeError("No nodes declared. Use @app.node('name').")
@@ -132,7 +97,6 @@ class App:
                 fn,
                 *,
                 cfg: AppConfig,
-                tools: ToolRegistry,
                 llm: Optional[LLMInterface],
                 consumes_hint,
                 emits_hint,
@@ -140,13 +104,10 @@ class App:
                 consumes = list(consumes_hint or [name])
                 super().__init__(name, consumes=consumes, emits=list(emits_hint or []))
                 self._fn = fn
-                self.ctx = Context(
-                    run_vars={}, inventory=Inventory(), tools=tools, llm=llm, cfg=cfg
-                )
+                self.ctx = Context(run_vars={}, llm=llm, cfg=cfg)
 
             def process(self, msg: Message, run_vars: Dict[str, Any]) -> List[Message]:
                 self.ctx.run_vars = run_vars
-                self.ctx.artifacts.clear()
                 out = self._fn(msg, self.ctx)
                 if out is None:
                     return []
@@ -162,13 +123,20 @@ class App:
                 name,
                 nd.func,
                 cfg=self.cfg,
-                tools=self._registry,
                 llm=self._llm_iface,
                 consumes_hint=nd.consumes,
                 emits_hint=nd.emits,
             )
 
-        G = graph_from_nodes(nodes)
+        G = nx.DiGraph()
+        for n in nodes.values():
+            G.add_node(n.name, kind="node", node=n)
+            for t in n.consumes:
+                G.add_node(t, kind="msg")
+                G.add_edge(t, n.name)
+            for t in n.emits:
+                G.add_node(t, kind="msg")
+                G.add_edge(n.name, t)
 
         for name, n in nodes.items():
             if name in G.nodes:
@@ -241,10 +209,7 @@ class App:
     def include_blueprint(self, module: Any) -> "App":
         if not hasattr(module, "__export__"):
             raise TypeError("include_blueprint expects an object with __export__().")
-        nodes_meta, tools = module.__export__()
-
-        for t in tools:
-            self._registry.register(t)
+        nodes_meta = module.__export__()
 
         for name, meta in nodes_meta.items():
             if name in self._nodes:

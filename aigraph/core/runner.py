@@ -11,14 +11,14 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 from aigraph.core.messages import Message
 
 
-class ExecutionContext:
+class RunHistory:
     def __init__(self, run_id: Optional[str] = None):
         self.run_id = run_id or str(uuid.uuid4())
         self.history: List[Dict[str, Any]] = []
         self.variables: Dict[str, Any] = {}
         self.created_at = dt.datetime.now(dt.UTC)
 
-    def record_bus_event(
+    def record_event(
         self,
         *,
         node: Optional[str],
@@ -91,20 +91,6 @@ class MessageRunner:
                 subs[t].append(node_obj)
         return subs
 
-    def _merge_artifacts(self, outs: List[Message], node_obj: Any) -> List[Message]:
-        ctx = getattr(node_obj, "ctx", None)
-        if not ctx or not getattr(ctx, "artifacts", None):
-            return outs
-        merged: List[Message] = []
-        artifacts_payload = [getattr(a, "__dict__", a) for a in ctx.artifacts]
-        for om in outs:
-            headers = dict(om.headers)
-            prev = headers.get("artifacts", [])
-            headers["artifacts"] = list(prev) + artifacts_payload
-            merged.append(Message(type=om.type, body=om.body, headers=headers))
-        ctx.artifacts.clear()
-        return merged
-
     def _correlate(self, parent: Message, outs: List[Message]) -> List[Message]:
         corr = parent.headers.get("correlation_id", parent.id)
         fixed: List[Message] = []
@@ -115,10 +101,10 @@ class MessageRunner:
                 fixed.append(om.with_header(correlation_id=corr, parent_id=parent.id))
         return fixed
 
-    def run(self, initial_messages: List[Message]) -> Tuple[List[Message], ExecutionContext]:
+    def run(self, initial_messages: List[Message]) -> Tuple[List[Message], RunHistory]:
         gen = self.run_iter(initial_messages)
         emitted: List[Message] = []
-        ctx: Optional[ExecutionContext] = None
+        ctx: Optional[RunHistory] = None
         try:
             while True:
                 _ = next(gen)
@@ -128,8 +114,8 @@ class MessageRunner:
 
     def run_iter(
         self, initial_messages: List[Message]
-    ) -> Generator[BusEvent, None, Tuple[List[Message], ExecutionContext]]:
-        ctx = ExecutionContext()
+    ) -> Generator[BusEvent, None, Tuple[List[Message], RunHistory]]:
+        ctx = RunHistory()
         subs = self._build_subscriptions()
 
         queue: deque[Message] = deque(initial_messages)
@@ -150,7 +136,7 @@ class MessageRunner:
                 "emitted": [m.type for m in outs],
                 "details": details,
             }
-            ctx.record_bus_event(
+            ctx.record_event(
                 node=node_name, consumed=consumed, emitted=ev["emitted"], details=details
             )
             try:
@@ -211,7 +197,6 @@ class MessageRunner:
                         ]
 
                     outs = self._correlate(msg, outs)
-                    outs = self._merge_artifacts(outs, node_obj)
                     for om in outs:
                         queue.append(om)
 
