@@ -1,11 +1,6 @@
-from .api import App, Blueprint, AppConfig, Message
+from .api import App, Blueprint, AppConfig, Message, Context
 
-__all__ = [
-    "App",
-    "Blueprint",
-    "AppConfig",
-    "Message",
-]
+__all__ = ["App", "Blueprint", "AppConfig", "Message", "Context"]
 
 try:
     from importlib.metadata import version, PackageNotFoundError

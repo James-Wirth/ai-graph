@@ -1,7 +1,6 @@
-import aigraph as ag
+from aigraph import App, Message, Context
+
 from pydantic import BaseModel
-from aigraph.core.messages import Message
-from aigraph.core.context import Context
 
 
 class In(BaseModel):
@@ -14,7 +13,7 @@ class Out(BaseModel):
 
 
 def test_pipeline_runs():
-    app = ag.App(name="test")
+    app = App(name="test")
 
     @app.node("start", emits=["process"])
     def start(msg: Message, ctx: Context):

@@ -31,8 +31,7 @@ pip install -e ".[dev]"
 #<some_path>/demo.py
 from pydantic import BaseModel
 
-from aigraph import Blueprint, Message
-from aigraph.core.context import Context
+from aigraph import Blueprint, Message, Context
 
 my_blueprint = Blueprint("my_blueprint")
 
