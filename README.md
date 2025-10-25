@@ -25,46 +25,73 @@ pip install -e ".[dev]"
 
 ## Example workflow
 
-### 1. Define a blueprint with nodes
+### 1. Define your Pydantic schemas
 
 ```python
-#<some_path>/demo.py
 from pydantic import BaseModel
 
+class Question(BaseModel):
+    question: str
+
+class SubjectRouter(BaseModel):
+    question_type: Literal["physics", "chemistry", ...]
+
+# etc...
+```
+
+### 2. Implement a blueprint 
+
+```python
+#<my_blueprint_path>/blueprint.py
 from aigraph import Blueprint, Message, Context
 
 my_blueprint = Blueprint("my_blueprint")
-
-@my_blueprint.node("alice", emits=["my_blueprint:bob", ...])
-def alice(msg: Message, ctx: Context) -> List[Message]:
-
-    class AliceIn(BaseModel): question: str
-    _in = AliceIn.model_validate(msg.body)
-
-    class AliceOut(BaseModel): answer: str
-    _out_ = ctx.structured(model=AliceOut, prompt=f"Answer briefly: {_in.question}")
-    
-    return [
-      Message(send_to="my_blueprint:bob", body=_out),
-      ...
-    ]
-
-@my_blueprint.node("bob", emits=...)
-def bob(msg: Message, ctx: Context) -> List[Message]:
-    ...
 ```
 
-### 2. Create an app and include the blueprint
+#### e.g. a routing node to classify the subject:
+```python
+@my_blueprint.node(
+    "subject_router",
+    emits=["my_blueprint:physics_agent", "my_blueprint:chemistry_agent", ...]
+)
+def subject_router(msg: Message, ctx: Context) -> List[Message]:
+    
+    question = Question.model_validate(msg.body)
+
+    # get a structured output from the LLM...
+    router_response = ctx.structured(
+        model=SubjectRouter,
+        prompt=f"Classify this question by subject: {question.question}"
+    )
+    
+    target_node = f"my_blueprint:{router_response.question_type}_agent"
+    return [Message(send_to=target_node, body=question)]
+```
+
+#### ...and nodes to handle the subject-specific implementation:
+```python
+@my_blueprint.node("physics_agent")
+def physics_agent(msg: Message, ctx: Context) -> List[Message]:
+
+    question = Question.model_validate(msg.body)
+    # ... physics-specific logic
+    return [...]
+```
+
+### 3. Create an app and include the blueprint
 
 
 ```python
 from aigraph import App
-from <some_path>.demo import my_blueprint
+from <my_blueprint_path>/blueprint import my_blueprint
 
 app = App(name="app")
 app.include_blueprint(my_blueprint)
 
-initial_payload = AliceIn(question="What's the meaning of life?")
-emitted, ctx_run = app.run(initial_payload, send_to=["my_blueprint:alice"])
-print("Final emitted types:", [m.type for m in emitted])
+emitted, run_ctx = app.run(
+    initial_payload=Question(question="""
+        Do the Navier-Stokes equations always have smooth solutions in three dimensions?
+    """,
+    send_to=["my_blueprint:subject_router"]
+)
 ```
